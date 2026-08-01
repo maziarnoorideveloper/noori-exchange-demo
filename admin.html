@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>پنل مدیریت — صرافی نوری</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg-1: #07060F; --bg-2: #170D28;
+    --panel: rgba(255,255,255,0.045); --panel-border: rgba(255,255,255,0.1);
+    --gold-1: #E3B94D; --gold-2: #F8E7B8; --rose: #C77B8A;
+    --up: #3FE0A5; --down: #FB7185; --text: #F5F1EA; --muted: #938FAB;
+    --field-bg: rgba(255,255,255,0.03);
+  }
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  body{
+    background: linear-gradient(165deg, var(--bg-1), var(--bg-2) 60%);
+    color: var(--text); font-family:'Vazirmatn', sans-serif;
+    min-height:100vh; padding: 24px 16px 80px;
+  }
+  .num{ font-family:'Space Grotesk', sans-serif; direction:ltr; unicode-bidi:isolate; }
+  .wrap{ max-width: 880px; margin:0 auto; }
+
+  header{
+    display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;
+    padding-bottom:20px; margin-bottom:24px; border-bottom:1px solid var(--panel-border);
+  }
+  .brand{ display:flex; align-items:center; gap:12px; }
+  .brand-mark{
+    width:42px; height:42px; border-radius:13px;
+    background: linear-gradient(145deg, var(--gold-1), var(--rose));
+    display:flex; align-items:center; justify-content:center;
+    font-weight:900; color:#160A1E; font-size:18px;
+  }
+  .brand-title{ font-weight:800; font-size:17px; }
+  .brand-sub{ font-size:12px; color:var(--muted); }
+  .back-link{
+    color:var(--gold-2); text-decoration:none; font-size:13px; font-weight:600;
+    display:flex; align-items:center; gap:6px; background:var(--panel); border:1px solid var(--panel-border);
+    padding:9px 16px; border-radius:999px;
+  }
+
+  .date-picker-row{
+    display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+    background: var(--panel); border:1px solid var(--panel-border); border-radius:16px;
+    padding:16px 18px; margin-bottom:20px;
+  }
+  .date-picker-row label{ font-size:12.5px; color:var(--muted); }
+  .date-picker-row input[type=date]{
+    background: var(--field-bg); border:1px solid var(--panel-border); color:var(--text);
+    padding:9px 12px; border-radius:10px; font-family:'Space Grotesk',sans-serif; font-size:13.5px;
+  }
+  .quick-btns{ display:flex; gap:8px; margin-inline-start:auto; flex-wrap:wrap; }
+  .quick-btns button{
+    background: var(--field-bg); border:1px solid var(--panel-border); color:var(--muted);
+    padding:8px 14px; border-radius:999px; font-size:12.5px; cursor:pointer; font-family:inherit;
+  }
+  .quick-btns button.active{ background: linear-gradient(150deg, var(--gold-1), var(--rose)); color:#160A1E; border-color:transparent; font-weight:700; }
+
+  .status-banner{
+    display:none; align-items:center; gap:10px; background: rgba(63,224,165,0.1);
+    border:1px solid rgba(63,224,165,0.3); color:var(--up); padding:10px 16px;
+    border-radius:12px; font-size:13px; margin-bottom:18px; font-weight:600;
+  }
+  .status-banner.show{ display:flex; }
+
+  .currency-grid{ display:flex; flex-direction:column; gap:12px; margin-bottom:24px; }
+  .currency-card{
+    background: var(--panel); border:1px solid var(--panel-border); border-radius:16px;
+    padding:16px 18px; display:grid; grid-template-columns: auto 1fr 1fr; gap:14px; align-items:center;
+  }
+  .cur-id{ display:flex; align-items:center; gap:10px; min-width:120px; }
+  .cur-flag{
+    width:36px; height:36px; border-radius:11px; flex-shrink:0;
+    background: linear-gradient(150deg, var(--gold-2), var(--gold-1));
+    display:flex; align-items:center; justify-content:center; font-weight:700; color:#160A1E; font-size:15px;
+  }
+  .cur-name{ font-weight:700; font-size:13.5px; }
+  .cur-code{ font-size:10.5px; color:var(--muted); }
+  .field-group label{ font-size:11px; color:var(--muted); display:block; margin-bottom:5px; }
+  .field-group input{
+    width:100%; background: var(--field-bg); border:1px solid var(--panel-border); color:var(--text);
+    padding:10px 12px; border-radius:10px; font-family:'Space Grotesk',sans-serif; font-size:14px; font-weight:600;
+  }
+  .field-group input:focus{ outline:none; border-color: var(--gold-1); }
+
+  .occasion-card{
+    background: var(--panel); border:1px solid var(--panel-border); border-radius:16px;
+    padding:16px 18px; margin-bottom:24px;
+  }
+  .occasion-card h3{ font-size:13.5px; margin-bottom:12px; color:var(--gold-2); }
+  .occasion-row{ display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-bottom:10px; }
+  .occasion-row input{
+    width:100%; background: var(--field-bg); border:1px solid var(--panel-border); color:var(--text);
+    padding:10px 12px; border-radius:10px; font-family:inherit; font-size:13px;
+  }
+  .occasion-row input:focus{ outline:none; border-color: var(--gold-1); }
+  .clear-occasion{
+    background:transparent; border:1px solid var(--panel-border); color:var(--down);
+    padding:7px 14px; border-radius:9px; font-size:12px; cursor:pointer; font-family:inherit;
+  }
+
+  .save-row{ display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  .save-btn{
+    background: linear-gradient(150deg, var(--gold-1), var(--rose)); color:#160A1E;
+    border:none; padding:14px 28px; border-radius:12px; font-weight:800; font-size:14.5px;
+    cursor:pointer; font-family:inherit; box-shadow: 0 10px 24px -8px rgba(227,185,77,.5);
+  }
+  .save-hint{ font-size:12px; color:var(--muted); }
+
+  .history-section{ margin-top:36px; }
+  .history-section h3{ font-size:14px; margin-bottom:14px; color:var(--gold-2); }
+  .history-table{ width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--panel-border); border-radius:14px; overflow:hidden; }
+  .history-table th{ text-align:right; font-size:11px; color:var(--muted); font-weight:500; padding:10px 12px; border-bottom:1px solid var(--panel-border); }
+  .history-table td{ padding:11px 12px; font-size:12.5px; border-bottom:1px solid var(--panel-border); }
+  .history-table tr:last-child td{ border-bottom:none; }
+  .history-table tr:hover{ background: rgba(255,255,255,0.02); cursor:pointer; }
+  .edit-link{ color:var(--gold-2); font-size:11.5px; }
+
+  .note-box{
+    background: rgba(227,185,77,0.08); border:1px solid rgba(227,185,77,0.25); border-radius:14px;
+    padding:14px 16px; font-size:12.5px; color:var(--muted); line-height:1.9; margin-top:28px;
+  }
+  .note-box strong{ color:var(--gold-2); }
+
+  @media (max-width:600px){
+    .currency-card{ grid-template-columns: 1fr; }
+    .cur-id{ margin-bottom:4px; }
+    .occasion-row{ grid-template-columns: 1fr; }
+    .quick-btns{ margin-inline-start:0; width:100%; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="brand">
+      <div class="brand-mark">N</div>
+      <div>
+        <div class="brand-title">پنل مدیریت نرخ ارز</div>
+        <div class="brand-sub">صرافی نوری</div>
+      </div>
+    </div>
+    <a class="back-link" href="index.html">← بازگشت به لندینگ</a>
+  </header>
+
+  <div class="date-picker-row">
+    <label for="datePick">تاریخ:</label>
+    <input type="date" id="datePick">
+    <div class="quick-btns">
+      <button type="button" id="btnYesterday">دیروز</button>
+      <button type="button" id="btnToday" class="active">امروز</button>
+    </div>
+  </div>
+
+  <div class="status-banner" id="statusBanner">✅ ذخیره شد و در لندینگ به‌روزرسانی گردید</div>
+
+  <div class="currency-grid" id="currencyGrid"></div>
+
+  <div class="occasion-card">
+    <h3>مناسبت این روز (اختیاری)</h3>
+    <div class="occasion-row">
+      <input type="text" id="occEn" placeholder="Occasion name (English)">
+      <input type="text" id="occFa" placeholder="نام مناسبت (فارسی)">
+    </div>
+    <button type="button" class="clear-occasion" id="clearOcc">حذف مناسبت این روز</button>
+  </div>
+
+  <div class="save-row">
+    <button class="save-btn" id="saveBtn">ذخیره نرخ‌های این روز</button>
+    <span class="save-hint">لندینگ پیج به‌صورت خودکار (هر ۵ ثانیه) بروزرسانی می‌شود</span>
+  </div>
+
+  <div class="history-section">
+    <h3>تاریخچه‌ی روزهای ثبت‌شده</h3>
+    <table class="history-table">
+      <thead><tr><th>تاریخ</th><th>پوند (فروش)</th><th>دلار (فروش)</th><th>یورو (فروش)</th><th></th></tr></thead>
+      <tbody id="historyBody"></tbody>
+    </table>
+  </div>
+
+  <div class="note-box">
+    <strong>نکته فنی:</strong> این پنل داده‌ها را در حافظه‌ی محلی همین مرورگر (localStorage) ذخیره می‌کند،
+    پس لندینگ پیج باید روی همین مرورگر/دستگاه باز شود تا تغییرات را ببیند. برای استفاده‌ی واقعی و نمایش
+    به همه‌ی مشتریان روی اینترنت، لازم است این پنل به یک سرور و دیتابیس واقعی وصل شود — فایل
+    <code class="num">data.js</code> جایی است که این اتصال باید انجام شود.
+  </div>
+
+  <div class="note-box" style="border-color: rgba(199,123,138,0.35); background: rgba(199,123,138,0.08);">
+    <strong>حالت نمایشی:</strong> این نسخه برای نمایش نمونه‌کار است و فرم ورود با نام‌کاربری/رمز واقعی هنوز
+    وصل نشده — در نسخه‌ی نهایی، این پنل پشت لاگین امن (JWT + رمز هش‌شده) قرار می‌گیرد و هیچ بازدیدکننده‌ای
+    بدون ورود نمی‌تواند به این صفحه برسد. داده‌های این دمو هر ۱۰ دقیقه به‌صورت خودکار ریست می‌شوند.
+  </div>
+
+</div>
+
+<script src="data.js"></script>
+<script src="demo-mode.js"></script>
+<script>
+  NooriData.seedIfEmpty();
+
+  const grid = document.getElementById('currencyGrid');
+  const datePick = document.getElementById('datePick');
+  const statusBanner = document.getElementById('statusBanner');
+
+  function todayISO(){ return NooriData.todayKey(); }
+  function yesterdayISO(){
+    const d = new Date(); d.setDate(d.getDate()-1); return d.toISOString().slice(0,10);
+  }
+
+  // build currency input rows
+  NooriData.CURRENCIES.forEach(cur => {
+    const card = document.createElement('div');
+    card.className = 'currency-card';
+    card.innerHTML = `
+      <div class="cur-id">
+        <div class="cur-flag">${cur.symbol}</div>
+        <div>
+          <div class="cur-name">${cur.nameFa}</div>
+          <div class="cur-code">${cur.code}</div>
+        </div>
+      </div>
+      <div class="field-group">
+        <label>نرخ خرید (تومان)</label>
+        <input type="number" class="num" data-cur="${cur.code}" data-field="buy" placeholder="0">
+      </div>
+      <div class="field-group">
+        <label>نرخ فروش (تومان)</label>
+        <input type="number" class="num" data-cur="${cur.code}" data-field="sell" placeholder="0">
+      </div>
+    `;
+    grid.appendChild(card);
+  });
+
+  function loadDateIntoForm(dateKey){
+    datePick.value = dateKey;
+    const rates = NooriData.getRatesForDate(dateKey);
+    NooriData.CURRENCIES.forEach(cur => {
+      const buyInput = grid.querySelector(`input[data-cur="${cur.code}"][data-field="buy"]`);
+      const sellInput = grid.querySelector(`input[data-cur="${cur.code}"][data-field="sell"]`);
+      const r = rates && rates[cur.code];
+      buyInput.value = r ? r.buy : '';
+      sellInput.value = r ? r.sell : '';
+    });
+    const event = NooriData.getEventForDate(dateKey);
+    document.getElementById('occEn').value = event ? event.nameEn : '';
+    document.getElementById('occFa').value = event ? event.nameFa : '';
+
+    document.getElementById('btnToday').classList.toggle('active', dateKey === todayISO());
+    document.getElementById('btnYesterday').classList.toggle('active', dateKey === yesterdayISO());
+  }
+
+  function collectAndSave(){
+    const dateKey = datePick.value || todayISO();
+    const rates = {};
+    NooriData.CURRENCIES.forEach(cur => {
+      const buy = parseFloat(grid.querySelector(`input[data-cur="${cur.code}"][data-field="buy"]`).value);
+      const sell = parseFloat(grid.querySelector(`input[data-cur="${cur.code}"][data-field="sell"]`).value);
+      if (!isNaN(buy) || !isNaN(sell)) {
+        rates[cur.code] = { buy: isNaN(buy) ? 0 : buy, sell: isNaN(sell) ? 0 : sell };
+      }
+    });
+    NooriData.setRatesForDate(dateKey, rates);
+
+    const occEn = document.getElementById('occEn').value.trim();
+    const occFa = document.getElementById('occFa').value.trim();
+    if (occEn || occFa) {
+      NooriData.setEventForDate(dateKey, { nameEn: occEn || occFa, nameFa: occFa || occEn, type: 'custom' });
+    }
+
+    statusBanner.classList.add('show');
+    setTimeout(()=> statusBanner.classList.remove('show'), 2500);
+    renderHistory();
+  }
+
+  document.getElementById('saveBtn').addEventListener('click', collectAndSave);
+  document.getElementById('clearOcc').addEventListener('click', ()=>{
+    document.getElementById('occEn').value = '';
+    document.getElementById('occFa').value = '';
+    NooriData.setEventForDate(datePick.value || todayISO(), null);
+    renderHistory();
+  });
+  document.getElementById('btnToday').addEventListener('click', ()=> loadDateIntoForm(todayISO()));
+  document.getElementById('btnYesterday').addEventListener('click', ()=> loadDateIntoForm(yesterdayISO()));
+  datePick.addEventListener('change', ()=> loadDateIntoForm(datePick.value));
+
+  function renderHistory(){
+    const tbody = document.getElementById('historyBody');
+    const dates = NooriData.getAllDates().sort().reverse();
+    tbody.innerHTML = '';
+    dates.forEach(dateKey => {
+      const r = NooriData.getRatesForDate(dateKey);
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td class="num">${dateKey}</td>
+        <td class="num">${r && r.GBP ? r.GBP.sell.toLocaleString() : '—'}</td>
+        <td class="num">${r && r.USD ? r.USD.sell.toLocaleString() : '—'}</td>
+        <td class="num">${r && r.EUR ? r.EUR.sell.toLocaleString() : '—'}</td>
+        <td><span class="edit-link">ویرایش ←</span></td>
+      `;
+      tr.addEventListener('click', ()=> loadDateIntoForm(dateKey));
+      tbody.appendChild(tr);
+    });
+  }
+
+  loadDateIntoForm(todayISO());
+  renderHistory();
+
+  /* DEMO MODE — remove this block (and demo-mode.js) for the real production site */
+  if (window.NooriDemo) {
+    NooriDemo.init({
+      bannerHtml: '🎭 <strong>پنل نمایشی</strong> — این نسخه نمونه‌کار است، هر تغییری هر ۱۰ دقیقه ریست می‌شود. بدون نیاز به رمز عبور.',
+      onReset: function () {
+        loadDateIntoForm(todayISO());
+        renderHistory();
+      }
+    });
+  }
+</script>
+</body>
+</html>
