@@ -1,0 +1,2879 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr" id="htmlRoot">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Noori Exchange — Live Rates & Calendar</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%23E3B94D'/%3E%3Cstop offset='1' stop-color='%23C77B8A'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='100' height='100' rx='28' fill='url(%23g)'/%3E%3Ctext x='50' y='68' font-family='Arial,sans-serif' font-size='56' font-weight='900' fill='%23160A1E' text-anchor='middle'%3EN%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800;900&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+/* ===== data.js inlined so this file is fully self-contained ===== */
+/**
+ * Noori Exchange — shared rates data layer
+ * Uses localStorage so the admin panel and landing page (same browser) stay in sync.
+ * Swap the functions below for real fetch() calls to your backend when ready — see
+ * the "CONNECTING A REAL BACKEND" notes at the bottom of this file.
+ */
+(function (global) {
+  const STORAGE_KEY = 'noori_exchange_rates_v1';
+  const EVENTS_KEY = 'noori_exchange_events_v1';
+
+  const CURRENCIES = [
+    { code: 'GBP', nameEn: 'British Pound',  nameFa: 'پوند انگلیس', symbol: '£' },
+    { code: 'USD', nameEn: 'US Dollar',      nameFa: 'دلار آمریکا', symbol: '$' },
+    { code: 'EUR', nameEn: 'Euro',           nameFa: 'یورو',        symbol: '€' },
+    { code: 'AED', nameEn: 'UAE Dirham',     nameFa: 'درهم امارات', symbol: 'د' },
+    { code: 'CNY', nameEn: 'Chinese Yuan',   nameFa: 'یوان چین',    symbol: '¥' },
+    { code: 'TRY', nameEn: 'Turkish Lira',   nameFa: 'لیر ترکیه',   symbol: 'L' }
+  ];
+
+  /** Format a Date object as YYYY-MM-DD using its LOCAL calendar date components
+      (never toISOString, which converts to UTC first and silently shifts the date
+      by a day in timezones ahead of UTC — this was a real bug in earlier versions). */
+  function toLocalDateKey(d) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+
+  function todayKey() {
+    return toLocalDateKey(new Date());
+  }
+
+  function loadAll() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch (e) {
+      console.error('Noori rates: failed to read storage', e);
+      return {};
+    }
+  }
+
+  function saveAll(data) {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      // notify other open tabs/windows on the same origin (landing page) instantly
+      window.dispatchEvent(new CustomEvent('noori-rates-updated', { detail: data }));
+    } catch (e) {
+      console.error('Noori rates: failed to write storage', e);
+    }
+  }
+
+  /** Get rates for a specific date (YYYY-MM-DD). Falls back to the nearest earlier date if missing. */
+  function getRatesForDate(dateKey) {
+    const all = loadAll();
+    if (all[dateKey]) return all[dateKey];
+    // fallback: find the most recent date at or before dateKey
+    const keys = Object.keys(all).filter(k => k <= dateKey).sort();
+    if (keys.length) return all[keys[keys.length - 1]];
+    return null;
+  }
+
+  /** Get the latest available rates (today, or most recent entered day). */
+  function getLatestRates() {
+    const all = loadAll();
+    const keys = Object.keys(all).sort();
+    if (!keys.length) return null;
+    return { date: keys[keys.length - 1], rates: all[keys[keys.length - 1]] };
+  }
+
+  /** Save/update rates for a given date. rates = { GBP: {buy, sell}, USD: {buy, sell}, ... } */
+  function setRatesForDate(dateKey, rates) {
+    const all = loadAll();
+    all[dateKey] = Object.assign({}, all[dateKey], rates, { _updatedAt: new Date().toISOString() });
+    saveAll(all);
+  }
+
+  function getAllDates() {
+    return Object.keys(loadAll()).sort();
+  }
+
+  /* ---------------- Occasions / calendar events ---------------- */
+  function loadEvents() {
+    try {
+      const raw = localStorage.getItem(EVENTS_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch (e) { return {}; }
+  }
+  function saveEvents(data) {
+    try {
+      localStorage.setItem(EVENTS_KEY, JSON.stringify(data));
+      window.dispatchEvent(new CustomEvent('noori-events-updated', { detail: data }));
+    } catch (e) { console.error('Noori events: failed to write storage', e); }
+  }
+  function setEventForDate(dateKey, event) {
+    const all = loadEvents();
+    if (event === null) { delete all[dateKey]; } else { all[dateKey] = event; }
+    saveEvents(all);
+  }
+  function getEventForDate(dateKey) {
+    return loadEvents()[dateKey] || null;
+  }
+  function getAllEvents() {
+    return loadEvents();
+  }
+
+  /* ---------------- Seed demo data on first run ---------------- */
+  function seedIfEmpty() {
+    const all = loadAll();
+    if (Object.keys(all).length > 0) return;
+    const today = todayKey();
+    const seed = {};
+    seed[today] = {
+      GBP: { buy: 136100, sell: 136450 },
+      USD: { buy: 108200, sell: 108400 },
+      EUR: { buy: 117600, sell: 117900 },
+      AED: { buy: 29450, sell: 29600 },
+      CNY: { buy: 14980, sell: 15050 },
+      TRY: { buy: 3120, sell: 3160 },
+      _updatedAt: new Date().toISOString()
+    };
+    // a few days of made-up history so the calendar has something to show
+    for (let i = 1; i <= 10; i++) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const key = toLocalDateKey(d);
+      /* Each currency needs its OWN wave, otherwise every normalised line in the
+         chart comes out identically shaped and they all sit exactly on top of
+         each other — which is what made the multi-currency chart look broken. */
+      const wave = (phase, amp) => (Math.sin(i * 0.55 + phase) * amp) | 0;
+      seed[key] = {
+        GBP: { buy: 136100 + wave(0.0, 900),  sell: 136450 + wave(0.0, 900) },
+        USD: { buy: 108200 + wave(1.7, 620),  sell: 108400 + wave(1.7, 620) },
+        EUR: { buy: 117600 + wave(3.1, 780),  sell: 117900 + wave(3.1, 780) },
+        AED: { buy: 29450  + wave(4.4, 210),  sell: 29600  + wave(4.4, 210) },
+        CNY: { buy: 14980  + wave(2.3, 130),  sell: 15050  + wave(2.3, 130) },
+        TRY: { buy: 3120   + wave(5.6, 55),   sell: 3160   + wave(5.6, 55) },
+        _updatedAt: d.toISOString()
+      };
+    }
+    saveAll(seed);
+
+    const events = loadEvents();
+    if (Object.keys(events).length === 0) {
+      const ev = {};
+      ev[today] = { nameEn: 'Sheikh Saduq Day', nameFa: 'روز شیخ صدوق', type: 'religious' };
+      saveEvents(ev);
+    }
+  }
+
+
+  /* ---------------- Contact & social settings ---------------- */
+  const CONTACT_KEY = 'noori_exchange_contact_v1';
+  const CURLIST_KEY = 'noori_exchange_currencies_v1';
+  const COIN_KEY    = 'noori_exchange_coin_v1';
+  const DEFAULT_CONTACT = {
+    phone: '021-1234-5678',
+    whatsapp: '0912-123-4567',
+    instagram: 'https://instagram.com/noori.exchange',
+    telegram: 'https://t.me/noori_exchange'
+  };
+  function getContact() {
+    try {
+      const raw = localStorage.getItem(CONTACT_KEY);
+      return raw ? Object.assign({}, DEFAULT_CONTACT, JSON.parse(raw)) : Object.assign({}, DEFAULT_CONTACT);
+    } catch (e) { return Object.assign({}, DEFAULT_CONTACT); }
+  }
+  function setContact(data) {
+    try {
+      localStorage.setItem(CONTACT_KEY, JSON.stringify(data));
+      window.dispatchEvent(new CustomEvent('noori-contact-updated', { detail: data }));
+    } catch (e) { console.error('Noori contact: failed to write storage', e); }
+  }
+
+
+
+  /* ---------------- Demo auto-reset ----------------
+     This is a public portfolio demo, so anything a visitor types is wiped on a
+     fixed schedule to keep the showcase clean and prevent lasting vandalism. */
+  const RESET_KEY = 'noori_exchange_reset_at_v1';
+  const RESET_AFTER_MS = 30 * 60 * 1000;   // 30 minutes
+
+  function resetDemoData(){
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(EVENTS_KEY);
+      localStorage.removeItem(CONTACT_KEY);
+      localStorage.setItem(RESET_KEY, String(Date.now()));
+    } catch (e) { console.error('demo reset failed', e); }
+  }
+
+  function enforceDemoReset(){
+    try {
+      const last = parseInt(localStorage.getItem(RESET_KEY) || '0', 10);
+      const now = Date.now();
+      if (!last) { localStorage.setItem(RESET_KEY, String(now)); return false; }
+      if (now - last >= RESET_AFTER_MS) { resetDemoData(); return true; }
+      return false;
+    } catch (e) { return false; }
+  }
+
+  function msUntilReset(){
+    try {
+      const last = parseInt(localStorage.getItem(RESET_KEY) || String(Date.now()), 10);
+      return Math.max(0, RESET_AFTER_MS - (Date.now() - last));
+    } catch (e) { return RESET_AFTER_MS; }
+  }
+
+  /* The currency list is user-editable from the admin panel, so it lives in
+     storage; DEFAULT_CURRENCIES is only the starting point. */
+  function getCurrencies(){
+    try {
+      const raw = localStorage.getItem(CURLIST_KEY);
+      const list = raw ? JSON.parse(raw) : null;
+      return (Array.isArray(list) && list.length) ? list : CURRENCIES.slice();
+    } catch(e){ return CURRENCIES.slice(); }
+  }
+  function saveCurrencies(list){
+    try {
+      localStorage.setItem(CURLIST_KEY, JSON.stringify(list));
+      window.dispatchEvent(new CustomEvent('noori-currencies-updated', { detail:list }));
+    } catch(e){}
+  }
+
+  function getCoinCurrency(){
+    try { return localStorage.getItem(COIN_KEY) || 'GBP'; } catch(e){ return 'GBP'; }
+  }
+  function setCoinCurrency(code){
+    try {
+      localStorage.setItem(COIN_KEY, code);
+      window.dispatchEvent(new CustomEvent('noori-coin-updated', { detail: code }));
+    } catch(e){}
+  }
+
+  global.NooriData = {
+    CURRENCIES: getCurrencies(),
+    getCurrencies,
+    saveCurrencies,
+    getCoinCurrency,
+    setCoinCurrency,
+    todayKey,
+    resetDemoData,
+    enforceDemoReset,
+    msUntilReset,
+    toLocalDateKey,
+    getRatesForDate,
+    getLatestRates,
+    setRatesForDate,
+    getAllDates,
+    setEventForDate,
+    getEventForDate,
+    getAllEvents,
+    getContact,
+    setContact,
+    seedIfEmpty
+  };
+})(window);
+
+/**
+ * ============================================================
+ * CONNECTING A REAL BACKEND (read this when you're ready to go live)
+ * ============================================================
+ * Right now every function above reads/writes localStorage, which only
+ * works on ONE browser/device — fine for testing, not for real customers.
+ *
+ * To go live, replace the body of these 4 functions with real API calls
+ * to your own server (Node/PHP/Python — anything with a database):
+ *
+ *   getRatesForDate(dateKey)   -> GET  /api/rates?date=YYYY-MM-DD
+ *   getLatestRates()           -> GET  /api/rates/latest
+ *   setRatesForDate(date, r)   -> POST /api/rates   { date, rates }
+ *   getAllDates()              -> GET  /api/rates/dates
+ *
+ * The admin panel (admin.html) and landing page (index.html) both only
+ * talk to window.NooriData — so once you swap this file's internals to
+ * call your real API instead of localStorage, nothing else needs to change.
+ */
+
+</script>
+<style>
+  :root{
+    --bg-1: #07060F; --bg-2: #170D28; --bg-3: #241141;
+    --panel: rgba(255,255,255,0.045); --panel-border: rgba(255,255,255,0.09);
+    --gold-1: #E3B94D; --gold-2: #F8E7B8; --rose: #C77B8A; --violet: #8B6FD9;
+    --up: #3FE0A5; --down: #FB7185; --text: #F5F1EA; --muted: #938FAB;
+    --shadow-soft: 0 16px 40px -12px rgba(0,0,0,.55);
+    --coin-ink: #1a0d24; --coin-ink-soft: #3a2a10; --coin-rim-line: rgba(22,10,30,0.22);
+    --today-badge-bg: rgba(63,224,165,0.12); --today-badge-border: rgba(63,224,165,0.3);
+    --scrollbar-track: transparent;
+  }
+  html[data-theme="light"]{
+    --bg-1: #FBF7EF; --bg-2: #F3ECDD; --bg-3: #EDE2C9;
+    --panel: rgba(22,13,20,0.04); --panel-border: rgba(22,13,20,0.09);
+    --gold-1: #C6942F; --gold-2: #8A6318; --rose: #B15C6C; --violet: #6E52B5;
+    --up: #159A6B; --down: #D8425A; --text: #221733; --muted: #6B6178;
+    --shadow-soft: 0 16px 40px -16px rgba(90,60,20,.22);
+    --coin-ink: #241333; --coin-ink-soft: #4a3418; --coin-rim-line: rgba(36,19,51,0.22);
+    --today-badge-bg: rgba(21,154,107,0.1); --today-badge-border: rgba(21,154,107,0.28);
+    --scrollbar-track: transparent;
+  }
+  html[data-theme="light"] body{
+    background: linear-gradient(165deg, var(--bg-1), var(--bg-2) 55%, var(--bg-3) 100%);
+  }
+  html[data-theme="light"] .brand-mark,
+  html[data-theme="light"] .gbp-symbol-badge,
+  html[data-theme="light"] .flag.featured,
+  html[data-theme="light"] .switcher button.active,
+  html[data-theme="light"] .day.today{
+    color:#FBF7EF;
+  }
+  html[data-theme="light"] .flag{ color:#FBF7EF; }
+  html[data-theme="light"] .coin-face{
+    box-shadow: 0 0 0 4px #a97a22 inset, 0 0 0 6px rgba(255,255,255,0.5) inset, 0 14px 34px -12px rgba(198,148,47,.4);
+  }
+  html[data-theme="light"] .orb{ opacity:.16; }
+  html[data-theme="light"] .today-strip,
+  html[data-theme="light"] .panel,
+  html[data-theme="light"] .mini-card{
+    box-shadow: 0 4px 10px -4px rgba(90,60,20,.16);
+  }
+
+  * { transition: background-color .35s ease, border-color .35s ease, color .35s ease, box-shadow .35s ease; }
+  .day, .switcher button{ transition: transform .2s, background-color .35s, border-color .35s, color .35s; }
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  html, body{ max-width:100%; overflow-x:hidden; }
+  html{ scroll-behavior:smooth; }
+  body{
+    background: linear-gradient(165deg, var(--bg-1), var(--bg-2) 55%, var(--bg-3) 100%);
+    color: var(--text); font-family:'Space Grotesk','Vazirmatn', sans-serif;
+    min-height:100vh; position:relative;
+  }
+  html[lang="fa"] body{ font-family:'Vazirmatn', sans-serif; }
+  .num{ font-family:'Space Grotesk', sans-serif; direction:ltr; unicode-bidi: isolate; }
+  img, svg{ max-width:100%; }
+
+  ::-webkit-scrollbar{ height:5px; width:6px; }
+  ::-webkit-scrollbar-track{ background:transparent; }
+  ::-webkit-scrollbar-thumb{ background: linear-gradient(90deg, var(--gold-1), var(--rose)); border-radius:99px; }
+  *{ scrollbar-width: thin; scrollbar-color: var(--gold-1) transparent; }
+
+  .orb{ position:fixed; border-radius:50%; filter: blur(80px); pointer-events:none; opacity:.28; z-index:0; will-change:transform; }
+  .orb1{ width:420px; height:420px; background: radial-gradient(circle, var(--rose), transparent 70%); top:-120px; inset-inline-end:-100px; animation: float1 17s ease-in-out infinite; }
+  .orb2{ width:360px; height:360px; background: radial-gradient(circle, var(--gold-1), transparent 70%); bottom:-130px; inset-inline-start:-80px; animation: float2 21s ease-in-out infinite; }
+  @keyframes float1{ 0%,100%{ transform: translate(0,0);} 50%{ transform: translate(-30px,50px);} }
+  @keyframes float2{ 0%,100%{ transform: translate(0,0);} 50%{ transform: translate(40px,-30px);} }
+  @media (prefers-reduced-motion: reduce){ *{ animation:none !important; transition:none !important; } }
+
+  .page{ max-width:1220px; margin:0 auto; position:relative; z-index:1; padding: 20px 20px 90px; }
+
+  /* ============================================================
+     HEADER — mobile-first: two clean rows, nothing ever overflows
+     ============================================================ */
+  header{ opacity:0; margin-bottom:22px; }
+  .header-top{
+    display:flex; align-items:center; justify-content:space-between; gap:12px;
+    padding-bottom:16px; border-bottom:1px solid var(--panel-border);
+  }
+  .brand{ display:flex; align-items:center; gap:11px; min-width:0; }
+  .brand-mark{
+    width:40px; height:40px; border-radius:13px; flex-shrink:0;
+    background: linear-gradient(145deg, var(--gold-1), var(--rose));
+    display:flex; align-items:center; justify-content:center;
+    font-weight:900; color:#160A1E; font-size:17px;
+    box-shadow: 0 8px 18px -5px rgba(227,185,77,0.5), inset 0 1px 1px rgba(255,255,255,.5);
+  }
+  .brand-text{ min-width:0; }
+  .brand-name-row{ display:flex; align-items:center; gap:7px; }
+  .brand-name{ font-weight:800; font-size:16px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .live-dot{ width:6px; height:6px; border-radius:50%; background:var(--up); flex-shrink:0; box-shadow:0 0 0 0 rgba(63,224,165,.6); animation: pulse 2s infinite; }
+  @keyframes pulse{ 0%{box-shadow:0 0 0 0 rgba(63,224,165,.5);} 70%{box-shadow:0 0 0 7px rgba(63,224,165,0);} 100%{box-shadow:0 0 0 0 rgba(63,224,165,0);} }
+  .brand-sub{ font-size:11px; color:var(--muted); margin-top:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+  .header-time{ text-align:end; flex-shrink:0; }
+  .header-time .t-lbl{ font-size:10px; color:var(--muted); display:block; }
+  .header-time .t-val{ font-size:14px; font-weight:700; color:var(--gold-2); }
+
+  .header-controls{
+    display:flex; align-items:center; justify-content:space-between; gap:8px;
+    margin-top:14px; width:100%;
+  }
+  .switcher{
+    display:flex; align-items:center; background: var(--panel); border:1px solid var(--panel-border);
+    border-radius:999px; padding:3px; gap:2px; flex-shrink:0;
+  }
+  .switcher button{
+    border:none; background:transparent; color:var(--muted); font-weight:600;
+    padding:6px 12px; border-radius:999px; cursor:pointer; transition: all .2s;
+    font-family:inherit; font-size:12px; white-space:nowrap;
+  }
+  .switcher button.active{
+    background: linear-gradient(150deg, var(--gold-1), var(--rose)); color:#160A1E;
+    box-shadow: 0 3px 10px -2px rgba(227,185,77,.5);
+  }
+  #calSwitch{ flex:1; }
+  #calSwitch button{ flex:1; text-align:center; }
+
+  .theme-toggle{
+    flex-shrink:0; width:34px; height:34px; border-radius:50%;
+    background: var(--panel); border:1px solid var(--panel-border);
+    display:flex; align-items:center; justify-content:center; cursor:pointer;
+    font-size:15px; position:relative; overflow:hidden;
+  }
+  .theme-toggle .theme-icon{ position:absolute; transition: transform .35s cubic-bezier(.2,.9,.25,1.2), opacity .35s; }
+  .theme-icon-dark{ opacity:1; transform: translateY(0) rotate(0); }
+  .theme-icon-light{ opacity:0; transform: translateY(14px) rotate(-40deg); }
+  html[data-theme="light"] .theme-icon-dark{ opacity:0; transform: translateY(-14px) rotate(40deg); }
+  html[data-theme="light"] .theme-icon-light{ opacity:1; transform: translateY(0) rotate(0); }
+
+  /* ============================================================
+     TODAY STRIP — the single most important glanceable block
+     ============================================================ */
+  .today-strip{
+    background: var(--panel); border:1px solid var(--panel-border); border-radius:18px;
+    padding:16px 18px; margin-bottom:16px; opacity:0;
+    display:grid; grid-template-columns: 1fr auto; gap:10px 16px; align-items:center;
+  }
+  .today-date{ grid-column:1; }
+  .today-date .lbl{ font-size:11px; color:var(--muted); margin-bottom:3px; }
+  .today-date .val{ font-size:16px; font-weight:700; line-height:1.3; }
+  .today-occasion{
+    grid-column:1 / -1; padding-top:12px; margin-top:2px; border-top:1px dashed rgba(227,185,77,0.25);
+    display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  }
+  .occasion-dot{ width:6px; height:6px; border-radius:50%; background:var(--gold-1); flex-shrink:0; box-shadow: 0 0 6px 1px rgba(227,185,77,.5); }
+  .today-occasion .txt{ font-size:13.5px; }
+  .today-occasion .txt strong{ color: var(--gold-2); font-weight:700; }
+
+  .today-badge{
+    grid-column:2; grid-row:1;
+    background: rgba(63,224,165,0.12); border:1px solid rgba(63,224,165,0.3); color:var(--up);
+    font-size:11px; font-weight:700; padding:5px 11px; border-radius:999px; white-space:nowrap;
+  }
+
+  /* ============================================================
+     COIN — signature element, sized to never fight the layout
+     ============================================================ */
+  .coin-block{ text-align:center; margin-bottom:18px; opacity:0; }
+  .coin-stage{
+    display:flex; justify-content:center; align-items:center;
+    position:relative; height:270px; touch-action:none;
+    -webkit-user-select:none; user-select:none;
+    pointer-events:auto; cursor:grab;
+  }
+  .coin-stage:active{ cursor:grabbing; }
+  /* the WebGL canvas fills this box */
+  .coin{ width:100%; height:100%; position:relative; }
+  .coin canvas{ display:block; width:100%; height:100%; }
+  .coin-fallback{
+    position:absolute; inset:0; display:none; align-items:center; justify-content:center;
+  }
+  .coin-fallback .fb-disc{
+    width:150px; height:150px; border-radius:50%;
+    background:
+      radial-gradient(circle at 33% 25%, rgba(255,255,255,.8), transparent 44%),
+      conic-gradient(from 215deg, #A9761F, #F8E7B8 10%, #E3B94D 24%, #9c6c1b 38%,
+        #F5E3B0 54%, #D8AC42 68%, #7d5716 82%, #A9761F);
+    box-shadow: 0 0 0 5px #8a611f inset, 0 14px 30px -10px rgba(0,0,0,.5);
+    display:flex; align-items:center; justify-content:center;
+    font-size:52px; font-weight:800; color:#1a0d24;
+  }
+
+  .coin-symbol{ font-size:56px; font-weight:800; color:var(--coin-ink); line-height:1; text-shadow: 0 2px 0 rgba(255,255,255,.4); }
+  .coin-caption{ font-size:9px; font-weight:700; color:var(--coin-ink-soft); letter-spacing:1.4px; margin-top:5px; text-transform:uppercase; }
+  .coin-rate{ font-size:23px; font-weight:800; color:var(--coin-ink); line-height:1; }
+  .coin-rate-unit{ font-size:8.5px; color:var(--coin-ink-soft); font-weight:700; letter-spacing:.8px; margin-top:4px; text-transform:uppercase; }
+  .coin-hint{ font-size:11.5px; color:var(--muted); margin-top:10px; }
+
+  /* ============================================================
+     GBP HERO CARD — full rate detail, no drag needed
+     ============================================================ */
+  .gbp-card{
+    background: linear-gradient(150deg, rgba(227,185,77,0.1), rgba(139,111,217,0.06));
+    border:1px solid rgba(227,185,77,0.3); border-radius:18px; padding:18px; margin-bottom:16px;
+    opacity:0;
+  }
+  .gbp-card-top{ display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+  .gbp-eyebrow{ font-size:11.5px; color:var(--gold-2); font-weight:600; display:flex; align-items:center; gap:6px; }
+  .gbp-eyebrow .dot-gold{ width:5px; height:5px; border-radius:50%; background:var(--gold-1); }
+  .gbp-symbol-badge{
+    width:34px; height:34px; border-radius:10px; flex-shrink:0;
+    background: linear-gradient(150deg, var(--gold-1), var(--rose));
+    display:flex; align-items:center; justify-content:center; font-size:17px; font-weight:800; color:#1a0d24;
+  }
+  .gbp-value-row{ display:flex; align-items:baseline; gap:8px; margin-bottom:4px; }
+  .gbp-value{ font-size:36px; font-weight:700; letter-spacing:-1px; color:var(--gold-2); }
+  .gbp-unit{ font-size:13px; color:var(--muted); }
+  .gbp-sub{ font-size:12px; color:var(--muted); margin-bottom:14px; }
+  .gbp-sub strong{ color:var(--up); font-weight:700; }
+  .gbp-mini-stats{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-top:4px; }
+
+  /* ---------- 14-day sparkline ---------- */
+  .spark-wrap{ margin-top:14px; padding-top:14px; border-top:1px solid var(--panel-border); }
+  .spark-head{ display:flex; align-items:baseline; justify-content:space-between; margin-bottom:6px; }
+  .spark-title{ font-size:11px; color:var(--muted); }
+  .spark-delta{ font-size:12px; font-weight:700; }
+  .spark-delta.up{ color:var(--up); } .spark-delta.down{ color:var(--down); } .spark-delta.flat{ color:var(--muted); }
+  .spark-svg{ width:100%; height:100px; display:block; overflow:visible; cursor:crosshair; }
+  .chart-axis{
+    display:flex; justify-content:space-between; margin-top:4px; padding:0 2px;
+    font-size:9.5px; color:var(--muted); font-family:'Space Grotesk',sans-serif;
+    direction:ltr;   /* oldest date on the left, matching the plotted line */
+  }
+  .range-caption{ font-size:9.5px; color:var(--muted); text-align:center; margin-top:6px; opacity:.85; }
+  .chart-grid-line{ stroke:var(--panel-border); stroke-width:1; }
+
+  .chart-series{ display:flex; gap:5px; margin-bottom:7px; flex-wrap:wrap; direction:ltr; }
+  .chart-series button{
+    display:flex; align-items:center; gap:6px;
+    background:transparent; border:1.5px solid var(--panel-border); color:var(--muted);
+    padding:5px 12px; border-radius:999px; font-size:11px; font-weight:800;
+    cursor:pointer; font-family:inherit; opacity:.55;
+    transition:opacity .18s, border-color .18s, background .18s, transform .18s;
+    -webkit-tap-highlight-color:transparent;
+  }
+  .chart-series button:hover{ opacity:.85; transform:translateY(-1px); }
+  /* the line swatch doubles as the legend key */
+  .chart-series button .dotc{
+    width:14px; height:3px; border-radius:99px; background:currentColor; opacity:.5;
+  }
+  .chart-series button.on{
+    opacity:1; border-color:currentColor;
+    background:color-mix(in srgb, currentColor 14%, transparent);
+  }
+  .chart-series button.on .dotc{ opacity:1; height:4px; }
+  /* fallback for browsers without color-mix */
+  @supports not (background: color-mix(in srgb, red 10%, transparent)){
+    .chart-series button.on{ background:rgba(255,255,255,.07); }
+  }
+  .chart-series button.on::after{
+    content:'✓'; font-size:9px; opacity:.9; margin-inline-start:1px;
+  }
+  .chart-ranges{ display:flex; gap:5px; margin-bottom:8px; direction:ltr; }
+  .chart-ranges button{
+    flex:1; background:var(--panel); border:1px solid var(--panel-border); color:var(--muted);
+    padding:5px 4px; border-radius:8px; font-size:11px; font-weight:700;
+    cursor:pointer; font-family:inherit;
+  }
+  .chart-ranges button.active{
+    background: linear-gradient(150deg, var(--gold-1), var(--rose)); color:#160A1E; border-color:transparent;
+  }
+  .chart-holder{ position:relative; }
+  .chart-note{
+    font-size:11px; color:var(--muted); background:rgba(227,185,77,.08);
+    border:1px solid rgba(227,185,77,.22); border-radius:10px;
+    padding:8px 12px; margin-bottom:8px; text-align:center;
+  }
+  .chart-tooltip{
+    position:absolute; pointer-events:none; opacity:0; transform:translate(-50%,-108%);
+    background:var(--bg-1); border:1px solid rgba(227,185,77,0.4); border-radius:10px;
+    padding:8px 11px; font-size:11px; white-space:nowrap; z-index:5;
+    box-shadow:0 8px 22px -8px rgba(0,0,0,.6); transition:opacity .15s;
+  }
+  html[data-theme="light"] .chart-tooltip{ background:#fff; }
+  .chart-tooltip.show{ opacity:1; }
+  .tt-date{ font-weight:700; color:var(--gold-2); margin-bottom:5px; font-size:10.5px; }
+  .tt-row{ display:flex; align-items:center; justify-content:space-between; gap:12px; }
+  .tt-lbl{ color:var(--muted); font-size:10px; }
+  .tt-val{ font-weight:700; font-size:11.5px; }
+  .tt-val.buy{ color:var(--up); }
+  .tt-val.sell{ color:var(--down); }
+  .chart-crosshair{ stroke:var(--gold-1); stroke-width:1; stroke-dasharray:3 3; opacity:.6; }
+  .chart-hover-dot{ fill:var(--gold-1); stroke:var(--bg-1); stroke-width:2; }
+  html[data-theme="light"] .chart-hover-dot{ stroke:#fff; }
+  /* NOTE: no `stroke` here — a CSS stroke beats the per-series stroke attribute and
+     made every currency line render gold. Colour is set per path in JS. */
+  .spark-line{ fill:none; stroke-linejoin:round; stroke-linecap:round; }
+  .spark-area{ fill:url(#sparkGrad); opacity:.35; }
+  .spark-dot{ fill:var(--gold-2); stroke:var(--bg-1); stroke-width:2; }
+  html[data-theme="light"] .spark-dot{ stroke:#fff; }
+
+  .spark-range{
+    display:flex; align-items:center; gap:10px; margin-top:10px;
+    direction:ltr;   /* pinned: the chart under it is always drawn left→right */
+  }
+  .range-item{ display:flex; flex-direction:column; gap:1px; flex-shrink:0; }
+  .range-item.high{ text-align:end; }
+  .range-lbl{ font-size:9px; color:var(--muted); }
+  html[lang="fa"] .range-lbl{ direction:rtl; }
+  .range-val{ font-size:11.5px; font-weight:700; }
+  .range-item.low .range-val{ color:var(--up); }
+  .range-item.high .range-val{ color:var(--down); }
+  .range-bar{
+    flex:1; height:5px; border-radius:99px; position:relative;
+    background: linear-gradient(90deg, var(--up), var(--gold-1), var(--down));
+    opacity:.55;
+  }
+  .range-marker{
+    position:absolute; top:50%; width:11px; height:11px; border-radius:50%;
+    background:var(--gold-2); border:2px solid var(--bg-1);
+    transform: translate(-50%, -50%); transition: left .5s cubic-bezier(.2,.9,.25,1.1);
+    box-shadow: 0 2px 6px rgba(0,0,0,.4);
+  }
+  html[data-theme="light"] .range-marker{ border-color:#fff; }
+
+  /* ---------- Quick converter ---------- */
+  .converter{
+    margin-top:14px; padding-top:14px; border-top:1px solid var(--panel-border);
+  }
+  .conv-title{ font-size:11.5px; color:var(--gold-2); font-weight:700; margin-bottom:9px; }
+  .conv-row{ display:flex; gap:8px; }
+  .conv-row input{
+    flex:1; min-width:0; background:var(--panel); border:1px solid var(--panel-border);
+    color:var(--text); padding:10px 12px; border-radius:10px;
+    font-family:'Space Grotesk',sans-serif; font-size:15px; font-weight:700; direction:ltr;
+  }
+  .conv-row input:focus{ outline:none; border-color:var(--gold-1); }
+  /* never show native spinner arrows on any number field */
+  input[type=number]::-webkit-outer-spin-button,
+  input[type=number]::-webkit-inner-spin-button{ -webkit-appearance:none; margin:0; }
+  input[type=number]{ -moz-appearance:textfield; appearance:textfield; }
+
+  /* ---------- custom dropdown (native <select> can't be themed properly:
+       the popup list is drawn by the OS, hence the blue highlight) ---------- */
+  .nsel{ position:relative; display:inline-flex; }
+  .nsel-btn{
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+    min-width:96px; background:var(--field-bg); border:1px solid var(--panel-border);
+    color:var(--text); padding:9px 13px; border-radius:11px; cursor:pointer;
+    font-family:inherit; font-size:12.5px; font-weight:700;
+    transition:border-color .2s, box-shadow .2s, background .2s;
+    -webkit-tap-highlight-color:transparent;
+  }
+  .nsel-btn:hover{ border-color:rgba(227,185,77,.55); }
+  .nsel-btn:focus{ outline:none; }
+  .nsel.open .nsel-btn{ border-color:var(--gold-1); box-shadow:0 0 0 3px rgba(227,185,77,.15); }
+  .nsel-car{
+    width:0;height:0;border-left:4.5px solid transparent;border-right:4.5px solid transparent;
+    border-top:5px solid var(--gold-1); transition:transform .22s;
+  }
+  .nsel.open .nsel-car{ transform:rotate(180deg); }
+  .nsel-menu{
+    position:fixed; z-index:950; min-width:120px; padding:6px;
+    background:var(--bg-1); border:1px solid var(--panel-border); border-radius:12px;
+    box-shadow:0 18px 42px -12px rgba(0,0,0,.6);
+    opacity:0; visibility:hidden; transform:translateY(-6px);
+    transition:opacity .18s, transform .18s, visibility .18s;
+    max-height:260px; overflow-y:auto;
+  }
+  html[data-theme="light"] .nsel-menu{ background:#fff; }
+  .nsel.open .nsel-menu{ opacity:1; visibility:visible; transform:translateY(0); }
+  .nsel-opt{
+    display:flex; align-items:center; justify-content:space-between; gap:10px; width:100%;
+    padding:9px 12px; border-radius:9px; cursor:pointer; background:transparent; border:none;
+    color:var(--text); font-family:inherit; font-size:12.5px; font-weight:600; text-align:start;
+  }
+  .nsel-opt:hover{ background:rgba(227,185,77,.14); }
+  .nsel-opt.sel{ background:linear-gradient(150deg,var(--gold-1),var(--rose)); color:#160A1E; font-weight:800; }
+
+  /* ---------- currency manager ---------- */
+  .cur-manage{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:14px; }
+  .cur-chip{
+    display:flex; align-items:center; gap:9px;
+    background:var(--field-bg); border:1px solid var(--panel-border);
+    padding:8px 10px 8px 13px; border-radius:12px; font-size:12.5px; font-weight:700;
+  }
+  html[dir="rtl"] .cur-chip{ padding:8px 13px 8px 10px; }
+  .cur-chip .cc-sym{
+    width:22px; height:22px; border-radius:7px; display:flex; align-items:center;
+    justify-content:center; font-size:11px;
+    background:linear-gradient(150deg,var(--gold-2),var(--gold-1)); color:#160A1E;
+  }
+  .cur-chip .cc-del{
+    width:20px; height:20px; border-radius:50%; border:none; cursor:pointer;
+    background:transparent; color:var(--muted); font-size:13px; line-height:1;
+    transition:background .2s, color .2s;
+  }
+  .cur-chip .cc-del:hover{ background:rgba(251,113,133,.16); color:var(--down); }
+  .cur-add-row{ display:flex; gap:8px; flex-wrap:wrap; }
+  .cur-add-row input{
+    background:var(--field-bg); border:1px solid var(--panel-border); color:var(--text);
+    padding:9px 12px; border-radius:10px; font-family:inherit; font-size:12.5px;
+  }
+  .cur-add-row input:focus{ outline:none; border-color:var(--gold-1); }
+  #newCurCode, #newCurSym{ width:74px; text-align:center; font-weight:800; }
+  .cur-add-row input:nth-of-type(3), .cur-add-row input:nth-of-type(4){ flex:1 1 130px; min-width:0; }
+
+  .conv-swap{
+    display:block; margin:9px auto; width:34px; height:34px; border-radius:50%;
+    background:var(--panel); border:1px solid var(--panel-border); color:var(--gold-2);
+    cursor:pointer; font-size:15px; line-height:1;
+    transition:transform .5s cubic-bezier(.32,.94,.36,1.12), border-color .2s, background .2s;
+    -webkit-tap-highlight-color:transparent; touch-action:manipulation;
+  }
+  .conv-swap::-moz-focus-inner{ border:0; }
+  .conv-swap:focus{ outline:none; }
+  .conv-swap:focus-visible{ outline:2px solid var(--gold-1); outline-offset:2px; }
+  /* rotate only via a JS-toggled class — a :hover rule stays stuck after a tap
+     on touch devices, which made the button spin when tapping elsewhere */
+
+  @media (hover:hover){ .conv-swap:hover{ border-color:var(--gold-1); } }
+  .conv-out-box{
+    flex:1; min-width:0; display:flex; align-items:center;
+    background:rgba(227,185,77,0.08); border:1px solid rgba(227,185,77,0.22);
+    border-radius:12px; padding:11px 14px;
+  }
+  .conv-out{ font-size:19px; font-weight:800; color:var(--gold-2); }
+  .conv-result{
+    display:flex; align-items:baseline; gap:8px; margin-top:10px;
+    background:rgba(227,185,77,0.08); border:1px solid rgba(227,185,77,0.22);
+    border-radius:12px; padding:11px 14px; flex-wrap:wrap;
+  }
+  .conv-eq{ color:var(--muted); font-size:15px; }
+  .conv-out{ font-size:21px; font-weight:800; color:var(--gold-2); }
+  .conv-unit{ font-size:12px; color:var(--muted); }
+  .conv-note{
+    display:flex; align-items:center; justify-content:space-between; gap:8px;
+    margin-top:7px; font-size:10.5px; color:var(--muted);
+  }
+  .conv-copy{
+    background:transparent; border:1px solid var(--panel-border); color:var(--gold-2);
+    padding:5px 12px; border-radius:8px; font-size:11px; font-weight:700;
+    cursor:pointer; font-family:inherit; flex-shrink:0;
+  }
+  .conv-copy:hover{ background:rgba(227,185,77,0.12); }
+  .conv-copy.copied{ background:var(--up); color:#062; border-color:transparent; }
+  .gbp-mini-stats div{
+    background: var(--panel); border:1px solid var(--panel-border); border-radius:13px;
+    padding:12px 8px 11px; text-align:center; position:relative; overflow:hidden;
+    transition: transform .2s, border-color .2s;
+  }
+  .gbp-mini-stats div::after{
+    content:""; position:absolute; left:0; right:0; top:0; height:2px; opacity:.75;
+  }
+  .gbp-mini-stats div.stat-buy::after{ background: var(--up); }
+  .gbp-mini-stats div.stat-sell::after{ background: var(--down); }
+  .gbp-mini-stats div.stat-high::after{ background: var(--gold-1); }
+  /* standard FX convention: buy(bid)=green, sell(ask)=red, high=neutral amber */
+  .gbp-mini-stats div.stat-buy{ border-color: rgba(63,224,165,0.35); background: rgba(63,224,165,0.07); }
+  .gbp-mini-stats div.stat-sell{ border-color: rgba(251,113,133,0.35); background: rgba(251,113,133,0.07); }
+  .gbp-mini-stats div.stat-high{ border-color: rgba(227,185,77,0.35); background: rgba(227,185,77,0.07); }
+  .gbp-mini-stats div.stat-buy .val{ color: var(--up); }
+  .gbp-mini-stats div.stat-sell .val{ color: var(--down); }
+  .gbp-mini-stats div.stat-high .val{ color: var(--gold-2); }
+  .gbp-mini-stats .lbl{ font-size:9.5px; color:var(--muted); display:block; margin-bottom:5px; letter-spacing:.2px; }
+  .gbp-mini-stats .val{ font-size:15px; font-weight:800; letter-spacing:-.2px; }
+
+  /* ============================================================
+     TICKER — secondary currencies, intentionally horizontal-scroll
+     ============================================================ */
+  .ticker-label{ font-size:11.5px; color:var(--muted); margin-bottom:8px; padding:0 2px; }
+  .ticker-scroll{
+    display:flex; gap:12px; overflow-x:auto;
+    padding:10px 4px 20px; margin-bottom:10px;
+    scroll-snap-type:x proximity; opacity:0;
+    scrollbar-width:none;
+  }
+  .ticker-scroll::-webkit-scrollbar{ height:0; }
+  .mini-card{
+    flex:0 0 auto; scroll-snap-align:start; width:162px; position:relative; overflow:hidden;
+    background:
+      linear-gradient(160deg, rgba(227,185,77,.06), transparent 60%),
+      var(--panel);
+    border:1px solid var(--panel-border); border-radius:16px; padding:14px 15px 13px;
+    transition: transform .22s cubic-bezier(.2,.9,.25,1.05), border-color .22s, box-shadow .22s;
+  }
+  /* thin accent rail that picks up the day's direction */
+  .mini-card::before{
+    content:""; position:absolute; inset-inline-start:0; top:0; bottom:0; width:3px;
+    background: linear-gradient(180deg, var(--gold-1), var(--rose)); opacity:.55;
+  }
+  .mini-card.is-up::before{ background: linear-gradient(180deg, var(--up), #1f9e73); }
+  .mini-card.is-down::before{ background: linear-gradient(180deg, var(--down), #b8384c); }
+  .mini-top{ display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+  .mini-flag{
+    width:30px; height:30px; border-radius:10px; flex-shrink:0;
+    display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:800; color:#160A1E;
+    background: linear-gradient(150deg, var(--gold-2), var(--gold-1));
+    box-shadow: 0 2px 6px -2px rgba(227,185,77,.5);
+  }
+  .mini-name{ font-size:12.5px; font-weight:700; line-height:1.2; }
+  .mini-code{ font-size:10px; color:var(--muted); letter-spacing:.4px; }
+  .mini-price{ font-size:17px; font-weight:800; letter-spacing:-.2px; }
+  .mini-chg{ font-size:10.5px; margin-top:3px; font-weight:600; }
+  .mini-chg.up{ color:var(--up); } .mini-chg.down{ color:var(--down); }
+  .mini-chg.flat{ color:var(--muted); }
+
+  /* ============================================================
+     Rates table + calendar panels
+     ============================================================ */
+  .section-label{
+    display:flex; align-items:center; gap:12px; margin: 10px 0 14px; opacity:0;
+    font-size:12px; color:var(--muted); font-weight:600; letter-spacing:.3px;
+  }
+  .section-label::before{
+    content:""; width:3px; height:14px; border-radius:99px; flex-shrink:0;
+    background: linear-gradient(180deg, var(--gold-1), var(--rose));
+  }
+  .section-label::after{
+    content:""; flex:1; height:1px;
+    background: linear-gradient(90deg, var(--panel-border), transparent);
+  }
+
+  .panel{
+    background: var(--panel); border:1px solid var(--panel-border); border-radius:18px;
+    padding:16px 16px 6px; margin-bottom:16px; opacity:0;
+  }
+  .panel-title{ display:flex; justify-content:space-between; align-items:baseline; margin-bottom:12px; padding-bottom:12px; border-bottom:1px solid var(--panel-border); }
+  .panel-title h2{ font-size:14.5px; font-weight:700; }
+  .panel-title span{ font-size:11px; color:var(--muted); }
+
+  table{ width:100%; border-collapse:collapse; }
+  thead th{ text-align:start; font-size:10.5px; color:var(--muted); font-weight:500; padding:7px 4px; border-bottom:1px solid var(--panel-border); }
+  thead th.col-rate, td.num{ text-align:end; }
+  thead th{ white-space:nowrap; }
+  /* .num cells are forced to direction:ltr so their text settles on the RIGHT edge;
+     headers follow page direction and drifted left in RTL. Pin both to one edge. */
+  thead th.col-rate{ text-align:right !important; }
+  tbody td.num{ text-align:right !important; }
+  tbody td{ padding:12px 4px; border-bottom:1px solid var(--panel-border); font-size:13px; }
+  tbody tr:last-child td{ border-bottom:none; }
+  .cur{ display:flex; align-items:center; gap:8px; }
+  .flag{ width:26px; height:26px; border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; color:#160A1E; flex-shrink:0; background: linear-gradient(150deg, var(--gold-2), var(--gold-1)); }
+  .flag.featured{ background: linear-gradient(150deg, var(--gold-1), var(--rose)); }
+  .cur-name{ font-weight:600; font-size:12.5px; }
+  .cur-code{ color:var(--muted); font-size:10px; }
+  .price{ font-weight:700; font-size:13px; }
+  .chg{ font-size:10.5px; padding:2px 7px; border-radius:6px; display:inline-block; }
+  .chg.up{ color:var(--up); background:rgba(63,224,165,0.13); }
+  .chg.down{ color:var(--down); background:rgba(251,113,133,0.13); }
+  .chg.flat{ color:var(--muted); background:rgba(147,143,171,0.12); }
+  .mini-chg.flat{ color:var(--muted); }
+  .compare-item .c-diff.flat{ color:var(--muted); }
+  tr.featured-row td{ background: rgba(227,185,77,0.07); }
+  tr.featured-row .price{ color: var(--gold-2); }
+
+  .cal-head{ display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
+  .cal-nav{ display:flex; gap:5px; }
+  /* In RTL, flip the glyphs so "previous" still visually points toward the start (right in RTL) */
+  /* NOTE: no flex-direction override here. In RTL a normal flex row already places
+     the first child (prev) on the right — which is exactly where "previous" belongs.
+     Adding row-reverse on top of the JS glyph swap double-flipped them. */
+  .cal-nav button{ width:26px; height:26px; border-radius:8px; border:1px solid var(--panel-border); background:transparent; color:var(--muted); cursor:pointer; font-size:13px; }
+  .cal-nav #calTodayBtn{
+    width:auto; padding:0 10px; font-size:11px; font-weight:700; color:var(--gold-2);
+    border-color: rgba(227,185,77,0.35); font-family:inherit;
+  }
+  .cal-nav #calTodayBtn:hover{ background: rgba(227,185,77,0.12); }
+  .cal-month{ font-size:13px; font-weight:700; }
+  .weekdays{ display:grid; grid-template-columns:repeat(7,1fr); text-align:center; font-size:10px; color:var(--muted); margin-bottom:6px; }
+  .days{ display:grid; grid-template-columns:repeat(7,1fr); gap:4px; margin-bottom:16px; }
+  .day{
+    aspect-ratio:1; display:flex; align-items:center; justify-content:center;
+    font-size:12.5px; border-radius:9px; color:var(--text); position:relative;
+    font-family:'Space Grotesk', sans-serif; cursor:pointer;
+    transition: background .16s ease, color .16s ease, transform .16s ease, border-color .16s;
+    border:1.5px solid transparent;
+  }
+  /* future days are inert, exactly as in the admin calendar */
+  .day.future{ opacity:.32; cursor:not-allowed; }
+  .day.future:hover{ background:transparent; transform:none; color:var(--text); }
+  /* a recorded day gets the same green dot as the admin calendar */
+  .day.has-data::after{
+    content:''; position:absolute; bottom:3px; width:3px; height:3px;
+    border-radius:50%; background:var(--up);
+  }
+  .day.muted{ color:#3A3752; }
+  /* clear, consistent hover on every selectable day */
+  .day:not(.muted):hover{
+    background: rgba(227,185,77,0.20);
+    color: var(--gold-2);
+    transform: translateY(-1px);
+    cursor: pointer;
+  }
+  .day.today{
+    background: linear-gradient(150deg, var(--gold-1), var(--rose));
+    color:#160A1E; font-weight:800; border-color:transparent;
+    box-shadow: 0 3px 10px -3px rgba(227,185,77,.55);
+  }
+  /* the day being compared is outlined, mirroring the admin panel's selected state */
+  .day.selected-compare{ border-color:var(--violet); font-weight:700; }
+  /* today already has a gold fill, so its hover has to brighten instead of tint */
+  .day.today:hover{
+    background: linear-gradient(150deg, #F2CF6B, #D98C9B);
+    color:#160A1E;
+    transform: translateY(-1px) scale(1.04);
+    box-shadow: 0 5px 14px -3px rgba(227,185,77,.75);
+  }
+  .day.event::after{ content:""; position:absolute; bottom:4px; width:3px; height:3px; border-radius:50%; background: var(--down); }
+  .day.holiday{ color: var(--down); }
+  .day.selected-compare{ border:1.5px solid var(--violet); font-weight:700; }
+
+  .event-list{ border-top:1px solid var(--panel-border); padding-top:12px; }
+  .event-list h3{ font-size:11px; color:var(--muted); margin-bottom:10px; font-weight:500; }
+  .event-row{ display:flex; justify-content:space-between; align-items:center; padding:8px 0; font-size:12px; gap:8px; }
+  .event-day{ width:32px; height:32px; border-radius:9px; background: var(--panel); display:flex; align-items:center; justify-content:center; font-weight:700; font-size:12px; color: var(--gold-2); flex-shrink:0; border:1px solid var(--panel-border); }
+  .event-info{ flex:1; min-width:0; }
+  .event-name{ font-weight:600; font-size:12.5px; }
+  .event-tag{ font-size:10px; color:var(--muted); }
+  .event-mark{ font-size:10px; padding:3px 8px; border-radius:6px; flex-shrink:0; }
+  .event-mark.red{ background:rgba(251,113,133,0.13); color:var(--down); }
+  .event-mark.gold{ background:rgba(227,185,77,0.16); color:var(--gold-2); }
+
+  /* ============================================================
+     FOOTER — contact info + social links
+     ============================================================ */
+  .site-footer{ margin-top:28px; opacity:0; }
+  .footer-panel{
+    background: var(--panel); border:1px solid var(--panel-border); border-radius:20px;
+    padding:22px 20px; box-shadow: var(--shadow-soft);
+  }
+  .footer-top{
+    display:flex; flex-direction:column; gap:18px; padding-bottom:18px; margin-bottom:18px;
+    border-bottom:1px solid var(--panel-border);
+  }
+  .footer-brand{ display:flex; align-items:center; gap:11px; }
+  .footer-brand-mark{
+    width:38px; height:38px; border-radius:12px; flex-shrink:0;
+    background: linear-gradient(145deg, var(--gold-1), var(--rose));
+    display:flex; align-items:center; justify-content:center;
+    font-weight:900; color:#160A1E; font-size:16px;
+  }
+  .footer-brand-name{ font-weight:800; font-size:15.5px; }
+  .footer-brand-tag{ font-size:11.5px; color:var(--muted); margin-top:1px; }
+
+  .footer-contact{ display:flex; flex-direction:column; gap:10px; }
+  .contact-row{
+    display:flex; align-items:center; gap:11px; font-size:13px; color:var(--text);
+    text-decoration:none;
+  }
+  .contact-icon.wa-icon{ color:#25D366; padding:7px; }
+  .contact-icon{
+    width:34px; height:34px; border-radius:10px; flex-shrink:0;
+    background: rgba(227,185,77,0.12); border:1px solid rgba(227,185,77,0.25);
+    display:flex; align-items:center; justify-content:center; font-size:15px;
+  }
+  .contact-text{ display:flex; flex-direction:column; min-width:0; }
+  .contact-text .contact-lbl{ font-size:10.5px; color:var(--muted); margin-bottom:1px; }
+  .contact-text .contact-val{ font-weight:600; }
+
+  .footer-bottom{ display:flex; flex-direction:column; gap:16px; }
+  .social-label{ font-size:11.5px; color:var(--muted); }
+  .social-row{ display:flex; gap:10px; flex-wrap:wrap; }
+  .social-link{
+    display:flex; align-items:center; gap:8px;
+    background: rgba(255,255,255,0.02); border:1px solid var(--panel-border);
+    border-radius:12px; padding:9px 14px; text-decoration:none; color:var(--text);
+    font-size:12.5px; font-weight:600;
+  }
+  .social-icon{ width:18px; height:18px; flex-shrink:0; display:flex; align-items:center; justify-content:center; }
+  .social-icon svg{ width:100%; height:100%; }
+  .social-instagram .social-icon{ color:#E1306C; }
+  .social-telegram .social-icon{ color:#29A9EA; }
+  .social-whatsapp .social-icon{ color:#25D366; }
+
+  .footer-legal{ text-align:center; color:var(--muted); font-size:10.5px; margin-top:18px; padding:0 10px; line-height:1.7; }
+  .admin-link{ color:var(--muted); text-decoration:underline; font-size:10.5px; opacity:.6; }
+  .admin-link:hover{ opacity:1; color:var(--gold-2); }
+
+  .compare-panel{
+    background: linear-gradient(150deg, rgba(139,111,217,0.12), rgba(139,111,217,0.04));
+    border:1px solid rgba(139,111,217,0.3); border-radius:18px; padding:16px 18px; margin-bottom:16px;
+    display:none; opacity:0;
+  }
+  .compare-panel.show{ display:block; }
+  .compare-head{ display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:12px; }
+  .compare-title{ font-size:12.5px; color:var(--violet); font-weight:700; display:flex; align-items:center; gap:6px; }
+  .compare-close{
+    background: transparent; border:1px solid var(--panel-border); color:var(--muted);
+    width:26px; height:26px; border-radius:50%; cursor:pointer; font-size:13px; flex-shrink:0;
+  }
+  .compare-close:hover{ color:var(--down); border-color: var(--down); }
+  .compare-date{ font-size:14px; font-weight:700; margin-bottom:10px; }
+  .compare-grid{ display:grid; grid-template-columns: repeat(auto-fit, minmax(130px,1fr)); gap:10px; }
+  .compare-item{
+    background: rgba(0,0,0,0.15); border-radius:12px; padding:10px 12px;
+  }
+  html[data-theme="light"] .compare-item{ background: rgba(0,0,0,0.04); }
+  .compare-item .c-lbl{ font-size:10.5px; color:var(--muted); display:flex; align-items:center; gap:6px; margin-bottom:4px; }
+  .compare-item .c-flag{
+    width:18px; height:18px; border-radius:6px; display:inline-flex; align-items:center; justify-content:center;
+    font-size:9px; font-weight:700; color:#160A1E; background: linear-gradient(150deg, var(--gold-2), var(--gold-1));
+  }
+  .compare-item .c-val{ font-size:15px; font-weight:700; }
+  .compare-item .c-rows{ display:flex; flex-direction:column; gap:3px; margin:6px 0 4px; }
+  .compare-item .c-row{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  .compare-item .c-row-lbl{ font-size:10px; color:var(--muted); }
+  .compare-item .c-row-val{ font-size:13.5px; font-weight:700; }
+  .compare-item .c-row-val.buy{ color: var(--up); }
+  .compare-item .c-row-val.sell{ color: var(--down); }
+  .compare-item .c-diff{ font-size:10.5px; margin-top:2px; }
+  .compare-item .c-diff.up{ color:var(--up); } .compare-item .c-diff.down{ color:var(--down); }
+
+  @media (min-width:640px){
+    .footer-top{ flex-direction:row; align-items:center; justify-content:space-between; }
+    .footer-contact{ flex-direction:row; gap:22px; }
+  }
+  @media (min-width:860px){
+    .footer-panel{ padding:28px 30px; }
+    .footer-bottom{ flex-direction:row; align-items:center; justify-content:space-between; }
+  }
+  @media (min-width:860px) and (hover:hover){
+    .social-link{ transition: transform .2s, border-color .2s; }
+    .social-link:hover{ transform: translateY(-2px); border-color: rgba(227,185,77,0.4); }
+    .contact-row{ transition: opacity .2s; }
+    .contact-row:hover{ opacity:.75; }
+  }
+
+  footer{ text-align:center; margin-top:30px; color:var(--muted); font-size:11px; opacity:0; padding:0 10px; }
+
+  [data-lang="fa"]{ display:none; }
+  html[lang="fa"] [data-lang="en"]{ display:none; }
+  html[lang="fa"] [data-lang="fa"]{ display:inline; }
+  html[lang="fa"] div[data-lang="fa"], html[lang="fa"] span.block[data-lang="fa"]{ display:block; }
+
+  /* ============================================================
+     TABLET / DESKTOP — progressively enhance from the mobile base
+     ============================================================ */
+  @media (min-width:640px){
+    .page{ padding: 28px 24px 90px; }
+    .today-strip{ grid-template-columns: 1fr 1fr auto; padding:20px 22px; }
+    .today-occasion{ grid-column: span 1; border-top:none; padding-top:0; margin-top:0;
+      justify-self:start; align-self:center; }
+    .today-badge{ grid-row:1; grid-column:3; }
+    .gbp-mini-stats{ grid-template-columns:repeat(3,1fr); max-width:360px; }
+  }
+
+  @media (min-width:860px){
+    .page{ padding: 36px 28px 100px; }
+    header{ margin-bottom:36px; }
+    .header-top{ padding-bottom:0; border-bottom:none; }
+    header{ display:block; }
+    .header-inner{ display:flex; align-items:center; justify-content:space-between; gap:20px; padding-bottom:24px; border-bottom:1px solid var(--panel-border); }
+    .brand-mark{ width:48px; height:48px; border-radius:15px; font-size:20px; }
+    .brand-name{ font-size:19px; }
+    .brand-sub{ font-size:12.5px; }
+    .header-controls{ width:auto; margin-top:0; gap:12px; }
+    #calSwitch{ flex:none; }
+    #calSwitch button{ padding:7px 16px; font-size:12.5px; }
+    .switcher button{ padding:7px 15px; font-size:12.5px; }
+    .header-time{ display:none; }
+
+    /* Desktop: the coin was reserving a whole column and left a dead gap beside it.
+       Now it takes a fixed 400px track and the rate/chart column absorbs the rest. */
+    .main-row{
+      display:grid; grid-template-columns: minmax(0,1fr) 400px;
+      gap:26px; align-items:start; margin-bottom:18px;
+    }
+    .today-strip{ margin-bottom:0; }
+    .coin-block{ margin-bottom:0; grid-row: 1 / 3; position:sticky; top:24px; }
+    .coin-stage{ height:400px; }
+    .coin{ width:400px; height:400px; }
+    .coin-symbol{ font-size:78px; }
+    .coin-caption{ font-size:12px; }
+    .coin-rate{ font-size:32px; }
+    .coin-rate-unit{ font-size:11px; }
+
+    .content-row{ display:grid; grid-template-columns: 1.1fr 0.9fr; gap:24px; align-items:start; }
+    .gbp-card{ margin-bottom:0; }
+
+    .main-grid{ display:grid; grid-template-columns: 1.3fr 1fr; gap:24px; }
+    .panel{ margin-bottom:0; }
+
+    /* the chart is the most information-dense element, so give it real height */
+    .spark-svg{ height:170px; }
+    .chart-holder{ min-height:170px; }
+    .spark-wrap{ margin-top:18px; padding-top:18px; }
+    .chart-series button{ padding:6px 14px; font-size:11.5px; }
+    .chart-ranges button{ padding:7px 6px; font-size:12px; }
+  }
+
+  /* wide desktop: even more chart room once there's space to spare */
+  @media (min-width:1280px){
+    .spark-svg{ height:210px; }
+    .chart-holder{ min-height:210px; }
+    .main-row{ gap:32px; }
+  }
+
+  @media (min-width:860px) and (hover:hover){
+    .switcher button:hover{ color:var(--gold-2); }
+    .theme-toggle:hover{ border-color: rgba(227,185,77,0.4); }
+    .mini-card{ transition: transform .25s, border-color .25s; }
+    .mini-card:hover{ transform: translateY(-3px); border-color: rgba(227,185,77,0.35); }
+    .panel{ transition: transform .25s; }
+    .panel:hover{ transform: translateY(-2px); }
+    .day{ transition: transform .15s, background .15s; }
+    .gbp-card{ position:relative; }
+  }
+</style>
+</head>
+<body>
+
+<div class="orb orb1"></div>
+<div class="orb orb2"></div>
+
+<div class="page">
+
+  <header id="hd">
+    <div class="header-inner">
+      <div class="header-top">
+        <div class="brand">
+          <div class="brand-mark">N</div>
+          <div class="brand-text">
+            <div class="brand-name-row">
+              <span class="brand-name" data-lang="en">Noori Exchange</span>
+              <span class="brand-name" data-lang="fa">صرافی نوری</span>
+              <span class="live-dot" title="Live"></span>
+            </div>
+            <div class="brand-sub" data-lang="en">Live rates & daily calendar</div>
+            <div class="brand-sub" data-lang="fa">نرخ لحظه‌ای ارز و تقویم روز</div>
+          </div>
+        </div>
+        <div class="header-time">
+          <span class="t-lbl" data-lang="en">Updated</span>
+          <span class="t-lbl" data-lang="fa">بروزرسانی</span>
+          <span class="t-val num" id="headerUpdateTime">--:--</span>
+        </div>
+      </div>
+
+      <div class="header-controls">
+        <div class="switcher" id="langSwitch">
+          <button data-set-lang="en" class="active">EN</button>
+          <button data-set-lang="fa">فا</button>
+        </div>
+        <div class="switcher" id="calSwitch">
+          <button data-set-cal="gregorian" class="active" data-lang="en">Gregorian</button>
+          <button data-set-cal="gregorian" class="active" data-lang="fa">میلادی</button>
+          <button data-set-cal="jalali" data-lang="en">Persian</button>
+          <button data-set-cal="jalali" data-lang="fa">شمسی</button>
+        </div>
+        <button class="theme-toggle" id="themeToggle" aria-label="Toggle theme" title="Toggle theme">
+          <span class="theme-icon theme-icon-dark">🌙</span>
+          <span class="theme-icon theme-icon-light">☀️</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <div class="main-row">
+
+    <div>
+      <!-- TODAY STRIP: date, occasion, live badge — the glanceable essentials -->
+      <div class="today-strip" id="todayStrip">
+        <div class="today-date">
+          <div class="lbl" data-lang="en">Today</div>
+          <div class="lbl" data-lang="fa">امروز</div>
+          <div class="val num cal-gregorian" data-lang="en" id="dateEnGregorian">Friday, Jul 31 2026</div>
+          <div class="val num cal-gregorian" data-lang="fa" id="dateFaGregorian">جمعه، ۳۱ ژوئیه ۲۰۲۶</div>
+          <div class="val num cal-jalali" style="display:none" data-lang="en" id="dateEnJalali">Thursday, 9 Mordad 1405</div>
+          <div class="val num cal-jalali" style="display:none" data-lang="fa" id="dateFaJalali">پنجشنبه، ۹ مرداد ۱۴۰۵</div>
+        </div>
+        <span class="today-badge" id="liveBadge">
+          <span data-lang="en">● Live</span>
+          <span data-lang="fa">● زنده</span>
+        </span>
+        <div class="today-occasion" id="todayOccasion">
+          <span class="occasion-dot"></span>
+          <span class="txt">
+            <span data-lang="en" id="occEnText"><strong>Sheikh Saduq Day</strong> — religious occasion</span>
+            <span data-lang="fa" id="occFaText"><strong>روز شیخ صدوق</strong> — مناسبت مذهبی</span>
+          </span>
+        </div>
+      </div>
+
+      <!-- SIGNATURE COIN -->
+      <div class="coin-block" id="coinBlock">
+        <div class="coin-stage" id="coinStage">
+          <!-- Real WebGL coin: an actual 3D cylinder with a perspective camera and
+               lighting, so depth and volume are genuine rather than simulated. -->
+          <div class="coin" id="coin"></div>
+          <div class="coin-fallback" id="coinFallback"><div class="fb-disc">£</div></div>
+          <span class="coin-rate num" id="coinRateVal" hidden>136,450</span>
+        </div>
+        <div class="coin-hint">
+          <span data-lang="en">👆 Tap & drag the coin to flip it</span>
+          <span data-lang="fa">👆 سکه رو بکش تا برگرده</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- GBP FULL DETAIL CARD -->
+    <div class="gbp-card" id="gbpCard">
+      <div class="gbp-card-top">
+        <div class="gbp-eyebrow"><span class="dot-gold"></span>
+          <span data-lang="en">Default currency · GBP</span>
+          <span data-lang="fa">ارز پیش‌فرض · پوند</span>
+        </div>
+        <div class="gbp-symbol-badge">£</div>
+      </div>
+      <div class="gbp-value-row">
+        <span class="gbp-value num" id="gbpValueMain">136,450</span>
+        <span class="gbp-unit" data-lang="en">Toman</span>
+        <span class="gbp-unit" data-lang="fa">تومان</span>
+      </div>
+      <div class="gbp-sub">
+        <span data-lang="en">British Pound sell rate · <strong class="num" id="gbpChangeEn">▲ 0.55%</strong> vs yesterday</span>
+        <span data-lang="fa">نرخ فروش پوند انگلیس · <strong class="num" id="gbpChangeFa">▲ 0.55%</strong> نسبت به دیروز</span>
+      </div>
+      <div class="gbp-mini-stats">
+        <div class="stat-buy">
+          <span class="lbl" data-lang="en">↓ Buy (we buy)</span><span class="lbl" data-lang="fa">↓ خرید (ما می‌خریم)</span>
+          <div class="val num" id="gbpBuyVal">136,100</div>
+        </div>
+        <div class="stat-sell">
+          <span class="lbl" data-lang="en">↑ Sell (we sell)</span><span class="lbl" data-lang="fa">↑ فروش (ما می‌فروشیم)</span>
+          <div class="val num" id="gbpSellVal">136,450</div>
+        </div>
+        <div class="stat-high">
+          <span class="lbl" data-lang="en">⌃ Today's high</span><span class="lbl" data-lang="fa">⌃ بیشترین امروز</span>
+          <div class="val num" id="gbpHighVal">136,600</div>
+        </div>
+      </div>
+
+      <!-- Interactive price history chart -->
+      <div class="spark-wrap" id="sparkWrap">
+        <div class="spark-head">
+          <span class="spark-title">
+            <span data-lang="en">Price history</span><span data-lang="fa">تاریخچه قیمت</span>
+          </span>
+          <span class="spark-delta num" id="sparkDelta"></span>
+        </div>
+        <div class="chart-series" id="chartSeries"></div>
+        <div class="chart-ranges" id="chartRanges">
+          <button type="button" data-range="7"  class="active"><span class="num">7</span><span data-lang="en">D</span><span data-lang="fa">ر</span></button>
+          <button type="button" data-range="14"><span class="num">14</span><span data-lang="en">D</span><span data-lang="fa">ر</span></button>
+          <button type="button" data-range="30"><span class="num">30</span><span data-lang="en">D</span><span data-lang="fa">ر</span></button>
+          <button type="button" data-range="90"><span class="num">90</span><span data-lang="en">D</span><span data-lang="fa">ر</span></button>
+        </div>
+        <div class="chart-note" id="chartNote" style="display:none"></div>
+        <div class="chart-holder" id="chartHolder">
+          <svg class="spark-svg" id="sparkSvg"></svg>
+          <div class="chart-tooltip" id="chartTooltip">
+            <div class="tt-date num" id="ttDate"></div>
+            <div class="tt-row"><span class="tt-lbl" id="ttBuyLbl">Buy</span><span class="tt-val buy num" id="ttBuy"></span></div>
+            <div class="tt-row"><span class="tt-lbl" id="ttSellLbl">Sell</span><span class="tt-val sell num" id="ttSell"></span></div>
+          </div>
+        </div>
+        <div class="chart-axis" id="chartAxis"></div>
+        <div class="spark-range">
+          <span class="range-item low">
+            <span class="range-lbl" data-lang="en">▼ Period low</span><span class="range-lbl" data-lang="fa">▼ کمترین دوره</span>
+            <span class="range-val num" id="range30Low">—</span>
+          </span>
+          <div class="range-bar" title="">
+            <div class="range-marker" id="rangeMarker"></div>
+          </div>
+          <span class="range-item high">
+            <span class="range-lbl" data-lang="en">▲ Period high</span><span class="range-lbl" data-lang="fa">▲ بیشترین دوره</span>
+            <span class="range-val num" id="range30High">—</span>
+          </span>
+        </div>
+        <div class="range-caption">
+          <span data-lang="en">● Marker shows where today's rate sits in this period</span>
+          <span data-lang="fa">● نشانگر، جایگاه نرخ امروز در این بازه را نشان می‌دهد</span>
+        </div>
+      </div>
+
+      <!-- Quick converter -->
+      <div class="converter" id="converter">
+        <div class="conv-title">
+          <span data-lang="en">💱 Quick convert</span><span data-lang="fa">💱 تبدیل سریع</span>
+        </div>
+        <div class="conv-row">
+          <input type="number" inputmode="decimal" id="convAmount" class="num" value="100" min="0">
+          <select id="convFrom" class="conv-sel"></select>
+        </div>
+        <button type="button" class="conv-swap" id="convSwap" title="swap">&#8645;</button>
+        <div class="conv-row">
+          <div class="conv-out-box"><span class="conv-out num" id="convResult">&mdash;</span></div>
+          <select id="convTo" class="conv-sel"></select>
+        </div>
+        <div class="conv-note">
+          <span data-lang="en">Based on today's sell rate</span>
+          <span data-lang="fa">بر اساس نرخ فروش امروز</span>
+          <button type="button" class="conv-copy" id="convCopy">
+            <span data-lang="en">Copy</span><span data-lang="fa">کپی</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Comparison panel: shown only when a past calendar day is clicked. Today's hero display never changes. -->
+  <div class="compare-panel" id="comparePanel">
+    <div class="compare-head">
+      <div class="compare-title">
+        <span data-lang="en">📊 Comparing with a past day</span>
+        <span data-lang="fa">📊 مقایسه با یک روز گذشته</span>
+      </div>
+      <button class="compare-close" id="compareCloseBtn" aria-label="Close comparison">✕</button>
+    </div>
+    <div class="compare-date num" id="compareDateLabel"></div>
+    <div class="compare-grid" id="compareGrid"></div>
+  </div>
+
+  <!-- TICKER: secondary currencies (rendered from data.js) -->
+  <div class="ticker-label">
+    <span data-lang="en">Other currencies — swipe for more</span>
+    <span data-lang="fa">سایر ارزها — برای دیدن بیشتر بکشید</span>
+  </div>
+  <div class="ticker-scroll" id="ticker"></div>
+
+  <div class="section-label" id="secLabel">
+    <span data-lang="en">Full details & calendar</span>
+    <span data-lang="fa">جزئیات کامل و تقویم</span>
+  </div>
+
+  <div class="main-grid">
+    <div class="panel" id="panelTable">
+      <div class="panel-title">
+        <h2><span data-lang="en">Today's Exchange Rates</span><span data-lang="fa">نرخ ارز امروز</span></h2>
+        <span class="num" id="panelUpdateTime">--:--</span>
+      </div>
+      <table>
+        <thead><tr id="ratesTableHead"></tr></thead>
+        <tbody id="ratesTableBody">
+        </tbody>
+      </table>
+    </div>
+
+    <div class="panel" id="panelCal">
+      <div class="cal-head">
+        <div class="cal-nav">
+          <button id="calPrevBtn" aria-label="previous month" data-action="prev">‹</button>
+          <button id="calTodayBtn" aria-label="go to today" title="Today">
+            <span data-lang="en">Today</span><span data-lang="fa">امروز</span>
+          </button>
+          <button id="calNextBtn" aria-label="next month" data-action="next">›</button>
+        </div>
+        <div class="cal-month" id="calMonthLabel">
+          <span class="cal-gregorian" data-lang="en">July 2026</span>
+          <span class="cal-gregorian" data-lang="fa">ژوئیه ۲۰۲۶</span>
+          <span class="cal-jalali" style="display:none" data-lang="en">Mordad 1405</span>
+          <span class="cal-jalali" style="display:none" data-lang="fa">مرداد ۱۴۰۵</span>
+        </div>
+      </div>
+
+      <div id="gridGregorian">
+        <div class="weekdays">
+          <span data-lang="en">S</span><span data-lang="en">M</span><span data-lang="en">T</span><span data-lang="en">W</span><span data-lang="en">T</span><span data-lang="en">F</span><span data-lang="en">S</span>
+          <span data-lang="fa">ی</span><span data-lang="fa">د</span><span data-lang="fa">س</span><span data-lang="fa">چ</span><span data-lang="fa">پ</span><span data-lang="fa">ج</span><span data-lang="fa">ش</span>
+        </div>
+        <div class="days" id="daysGregorian"></div>
+      </div>
+
+      <div id="gridJalali" style="display:none">
+        <div class="weekdays"><span>ش</span><span>ی</span><span>د</span><span>س</span><span>چ</span><span>پ</span><span>ج</span></div>
+        <div class="days" id="daysJalali"></div>
+      </div>
+
+      <div class="event-list">
+        <h3><span data-lang="en">This week's occasions</span><span data-lang="fa">مناسبت‌های این هفته</span></h3>
+        <div id="eventListBody"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- FOOTER: contact + social -->
+  <div class="site-footer" id="siteFooter">
+    <div class="footer-panel">
+      <div class="footer-top">
+        <div class="footer-brand">
+          <div class="footer-brand-mark">N</div>
+          <div>
+            <div class="footer-brand-name" data-lang="en">Noori Exchange</div>
+            <div class="footer-brand-name" data-lang="fa">صرافی نوری</div>
+            <div class="footer-brand-tag" data-lang="en">Trusted currency exchange</div>
+            <div class="footer-brand-tag" data-lang="fa">صرافی معتبر و مورد اعتماد</div>
+          </div>
+        </div>
+
+        <div class="footer-contact">
+          <a class="contact-row" id="contactPhoneLink" href="tel:+982112345678">
+            <span class="contact-icon">📞</span>
+            <span class="contact-text">
+              <span class="contact-lbl" data-lang="en">Call us</span>
+              <span class="contact-lbl" data-lang="fa">تماس با ما</span>
+              <span class="contact-val num" id="contactPhoneVal">021-1234-5678</span>
+            </span>
+          </a>
+          <a class="contact-row" id="contactWhatsappLink" href="https://wa.me/989121234567" target="_blank" rel="noopener">
+            <span class="contact-icon wa-icon"><svg viewBox="0 0 32 32" fill="currentColor" style="width:100%;height:100%"><path d="M16.04 4C9.9 4 4.92 8.98 4.92 15.12c0 1.96.51 3.88 1.49 5.57L4.83 27l6.47-1.55a11.1 11.1 0 0 0 4.74 1.06h.01c6.13 0 11.12-4.98 11.12-11.12 0-2.97-1.16-5.76-3.26-7.86A11.03 11.03 0 0 0 16.04 4zm0 2.04c2.43 0 4.71.95 6.43 2.66a9.03 9.03 0 0 1 2.66 6.42c0 5.02-4.08 9.09-9.1 9.09-1.5 0-2.98-.38-4.28-1.1l-.31-.17-3.84.92.94-3.74-.2-.32a9.05 9.05 0 0 1-1.39-4.81c0-5.01 4.08-9.09 9.09-9.09zm-4.02 4.6c-.19 0-.5.07-.76.35-.26.28-1 .98-1 2.38s1.02 2.76 1.17 2.95c.14.19 1.98 3.02 4.8 4.24.67.29 1.19.46 1.6.59.67.21 1.28.18 1.77.11.54-.08 1.66-.68 1.9-1.34.23-.66.23-1.22.16-1.34-.07-.11-.26-.18-.54-.32-.28-.14-1.66-.82-1.92-.91-.26-.1-.45-.14-.63.14-.19.28-.73.91-.89 1.1-.17.19-.33.21-.61.07-.28-.14-1.19-.44-2.26-1.4-.84-.74-1.4-1.66-1.57-1.94-.16-.28-.02-.43.12-.57.13-.13.28-.33.42-.5.14-.16.19-.28.28-.47.1-.19.05-.35-.02-.49-.07-.14-.63-1.52-.86-2.08-.23-.55-.46-.47-.63-.48h-.53z"/></svg></span>
+            <span class="contact-text">
+              <span class="contact-lbl" data-lang="en">WhatsApp</span>
+              <span class="contact-lbl" data-lang="fa">واتساپ</span>
+              <span class="contact-val num" id="contactWhatsappVal">0912-123-4567</span>
+            </span>
+          </a>
+        </div>
+      </div>
+
+      <div class="footer-bottom">
+        <div>
+          <div class="social-label" data-lang="en">Follow us</div>
+          <div class="social-label" data-lang="fa">ما را دنبال کنید</div>
+        </div>
+        <div class="social-row">
+          <a class="social-link social-instagram" id="socialInstagram" href="https://instagram.com/noori.exchange" target="_blank" rel="noopener">
+            <span class="social-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="20" rx="5"/><path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"/><line x1="17.5" y1="6.5" x2="17.5" y2="6.5"/></svg>
+            </span>
+            <span>Instagram</span>
+          </a>
+          <a class="social-link social-telegram" id="socialTelegram" href="https://t.me/noori_exchange" target="_blank" rel="noopener">
+            <span class="social-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M21.9 4.3c.3-1.2-.9-2.1-2-1.7L2.6 10.1c-1.2.5-1.2 2.2.1 2.6l4.5 1.4 1.7 5.4c.2.7 1.1.9 1.6.4l2.5-2.4 4.7 3.5c.9.6 2.2.2 2.5-.9l3.7-15.8zM8.6 13.6l9.6-6c.3-.2.6.2.3.4l-8 7.5-.3 3.2-1.4-4z"/></svg>
+            </span>
+            <span>Telegram</span>
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <div class="footer-legal">
+      <span data-lang="en">Rates are set by Noori Exchange · For informational purposes only</span>
+      <span data-lang="fa">نرخ‌ها توسط صرافی نوری تعیین می‌شوند · صرفاً جهت اطلاع‌رسانی</span>
+      <br>
+      <span data-lang="en">© 2026 Noori Exchange. All rights reserved.</span>
+      <span data-lang="fa">© ۲۰۲۶ صرافی نوری. تمامی حقوق محفوظ است.</span>
+      <br>
+      <a href="admin.html" class="admin-link">
+        <span data-lang="en">Staff panel</span>
+        <span data-lang="fa">پنل کارکنان</span>
+      </a>
+    </div>
+  </div>
+</div>
+
+<script>
+  const html = document.getElementById('htmlRoot');
+  const faDigits = ['۰','۱','۲','۳','۴','۵','۶','۷','۸','۹'];
+  const toFaDigits = s => s.replace(/[0-9]/g, d => faDigits[d]);
+  let currentLang = 'en';
+  let comparingDate = null;
+  /* chart state must be declared before setLang() runs during init, otherwise
+     touching it from setLang throws a temporal-dead-zone ReferenceError */
+  let chartRange = 7;
+  let chartPoints = [];
+  /* Multiple currencies can be plotted at once. Their absolute values differ wildly
+     (TRY ~3k vs GBP ~136k), so each line is normalised to its own min/max and the
+     tooltip reports real numbers. */
+  let chartSeriesOn = ['GBP'];
+  const SERIES_COLORS = { GBP:'#E3B94D', USD:'#3FE0A5', EUR:'#8B6FD9', AED:'#FB7185', CNY:'#4FC3F7', TRY:'#FF9F43' };   // set when a past day is being compared; null = only showing today
+
+  /* Re-scans .num elements every time it's called (safe to call after any DOM update) */
+  function applyNumeralLanguage(lang){
+    document.querySelectorAll('.num').forEach(el => {
+      if (!el.dataset.en) el.dataset.en = el.textContent;
+      el.textContent = (lang === 'fa') ? toFaDigits(el.dataset.en) : el.dataset.en;
+    });
+  }
+
+  function setLang(lang){
+    currentLang = lang;
+    html.setAttribute('lang', lang);
+    html.setAttribute('dir', lang === 'fa' ? 'rtl' : 'ltr');
+    document.title = lang === 'fa' ? 'صرافی نوری — نرخ ارز و تقویم' : 'Noori Exchange — Live Rates & Calendar';
+    document.querySelectorAll('#langSwitch button').forEach(b=> b.classList.toggle('active', b.dataset.setLang === lang));
+
+    const activeCal = document.getElementById('gridJalali').style.display !== 'none' ? 'jalali' : 'gregorian';
+    document.querySelectorAll('#calSwitch button').forEach(b=>{
+      const show = b.dataset.lang === lang;
+      b.style.display = show ? 'inline-block' : 'none';
+      if (show) b.classList.toggle('active', b.dataset.setCal === activeCal);
+    });
+
+    applyNumeralLanguage(lang);
+    if (typeof comparingDate !== 'undefined' && comparingDate) renderComparison(comparingDate);
+    if (typeof updateNavArrowGlyphs === 'function') updateNavArrowGlyphs();
+    if (typeof renderRatesHead === 'function') renderRatesHead();
+    if (chartPoints.length) renderSparkline();   // re-label axis in the new language
+    if (window.NooriCoin) window.NooriCoin.refresh();  // captions are baked into the coin texture
+  }
+
+  function setCal(cal){
+    document.querySelectorAll('#calSwitch button').forEach(b=>{
+      if (b.style.display === 'none') return;
+      b.classList.toggle('active', b.dataset.setCal === cal);
+    });
+    document.getElementById('gridGregorian').style.display = (cal === 'gregorian') ? '' : 'none';
+    document.getElementById('gridJalali').style.display = (cal === 'jalali') ? '' : 'none';
+    document.querySelectorAll('.cal-gregorian').forEach(el=> el.style.display = (cal === 'gregorian') ? '' : 'none');
+    document.querySelectorAll('.cal-jalali').forEach(el=> el.style.display = (cal === 'jalali') ? '' : 'none');
+    // the chart axis and the comparison panel both label dates in the active
+    // calendar, so they must repaint immediately rather than on the next click
+    if (typeof chartPoints !== 'undefined' && chartPoints.length) renderSparkline();
+    if (typeof comparingDate !== 'undefined' && comparingDate) renderComparison(comparingDate);
+    if (typeof renderEventList === 'function') renderEventList();
+  }
+
+  document.getElementById('langSwitch').addEventListener('click', e=>{
+    const b = e.target.closest('button[data-set-lang]'); if (b) setLang(b.dataset.setLang);
+  });
+  document.getElementById('calSwitch').addEventListener('click', e=>{
+    const b = e.target.closest('button[data-set-cal]'); if (b) setCal(b.dataset.setCal);
+  });
+
+  setLang('en');
+  setCal('gregorian');
+
+  /* ============================================================
+     DATA RENDERING ENGINE — reads from NooriData (data.js)
+     ============================================================ */
+  NooriData.enforceDemoReset();
+  NooriData.seedIfEmpty();
+
+  let calendarCursor = new Date();          // which month the calendar grid is showing
+
+  function fmtNum(n){ return Math.round(n).toLocaleString('en-US'); }
+
+  function pctChange(today, prev){
+    if (!prev) return null;
+    const diff = ((today - prev) / prev) * 100;
+    return diff;
+  }
+
+  function renderRatesHead(){
+    const head = document.getElementById('ratesTableHead');
+    if (!head) return;
+    const fa = currentLang === 'fa';
+    // single-language plain text: keeping both languages as sibling spans caused the
+    // numeral pass to flatten them into one concatenated string ("Buyخرید")
+    const cols = fa
+      ? ['ارز', 'خرید', 'فروش', 'تغییر']
+      : ['Currency', 'Buy', 'Sell', 'Chg'];
+    head.innerHTML = cols.map((label,i)=>
+      `<th${i>0 ? ' class="col-rate"' : ''}>${label}</th>`).join('');
+  }
+
+  function renderRates(dateKey){
+    renderRatesHead();
+    // dateKey is always NooriData.todayKey() now — the hero display (coin, GBP card, table, ticker)
+    // shows LIVE today's data only. Historical days are shown in the separate comparison panel.
+    const rates = NooriData.getRatesForDate(dateKey);
+    if (!rates) return;
+
+    const allDates = NooriData.getAllDates().filter(d => d < dateKey).sort();
+    const prevKey = allDates[allDates.length - 1];
+    const prevRates = prevKey ? NooriData.getRatesForDate(prevKey) : null;
+
+    const gbp = rates.GBP;
+    if (gbp) {
+      document.getElementById('gbpValueMain').dataset.en = fmtNum(gbp.sell);
+      document.getElementById('coinRateVal').dataset.en = fmtNum(gbp.sell);
+      document.getElementById('gbpBuyVal').dataset.en = fmtNum(gbp.buy);
+      document.getElementById('gbpSellVal').dataset.en = fmtNum(gbp.sell);
+      document.getElementById('gbpHighVal').dataset.en = fmtNum(Math.max(gbp.buy, gbp.sell));
+
+      const prevGbp = prevRates && prevRates.GBP;
+      const chg = prevGbp ? pctChange(gbp.sell, prevGbp.sell) : null;
+      const chgStr = chg === null ? '—' : (Math.abs(chg) < 0.005 ? `0.00%` : `${chg > 0 ? '▲' : '▼'} ${Math.abs(chg).toFixed(2)}%`);
+      document.getElementById('gbpChangeEn').dataset.en = chgStr;
+      document.getElementById('gbpChangeFa').dataset.en = chgStr;
+    }
+
+    const ticker = document.getElementById('ticker');
+    ticker.innerHTML = '';
+    NooriData.CURRENCIES.filter(c => c.code !== 'GBP').forEach(cur => {
+      const r = rates[cur.code];
+      if (!r) return;
+      const prevR = prevRates && prevRates[cur.code];
+      const chg = prevR ? pctChange(r.sell, prevR.sell) : null;
+      const chgClass = chg === null ? '' : (Math.abs(chg) < 0.005 ? 'flat' : (chg > 0 ? 'up' : 'down'));
+      const chgStr = chg === null ? '—' : (Math.abs(chg) < 0.005 ? `0.00%` : `${chg > 0 ? '▲' : '▼'} ${Math.abs(chg).toFixed(2)}%`);
+      const card = document.createElement('div');
+      card.className = 'mini-card' + (chgClass ? ' is-' + chgClass : '');
+      card.innerHTML = `
+        <div class="mini-top">
+          <div class="mini-flag">${cur.symbol}</div>
+          <div><div class="mini-name"><span data-lang="en">${cur.nameEn}</span><span data-lang="fa">${cur.nameFa}</span></div><div class="mini-code">${cur.code}</div></div>
+        </div>
+        <div class="mini-price num" data-en="${fmtNum(r.sell)}">${fmtNum(r.sell)}</div>
+        <div class="mini-chg ${chgClass} num" data-en="${chgStr}">${chgStr}</div>
+      `;
+      ticker.appendChild(card);
+    });
+
+    const tbody = document.getElementById('ratesTableBody');
+    tbody.innerHTML = '';
+    NooriData.CURRENCIES.forEach(cur => {
+      const r = rates[cur.code];
+      if (!r) return;
+      const prevR = prevRates && prevRates[cur.code];
+      const chg = prevR ? pctChange(r.sell, prevR.sell) : null;
+      const chgClass = chg === null ? '' : (Math.abs(chg) < 0.005 ? 'flat' : (chg > 0 ? 'up' : 'down'));
+      const chgStr = chg === null ? '—' : (Math.abs(chg) < 0.005 ? `0.00%` : `${chg > 0 ? '▲' : '▼'}${Math.abs(chg).toFixed(2)}%`);
+      const tr = document.createElement('tr');
+      if (cur.code === 'GBP') tr.className = 'featured-row';
+      tr.innerHTML = `
+        <td><div class="cur"><span class="flag${cur.code === 'GBP' ? ' featured' : ''}">${cur.symbol}</span><div>
+          <div class="cur-name"><span data-lang="en">${cur.nameEn}</span><span data-lang="fa">${cur.nameFa}</span></div>
+          <div class="cur-code">${cur.code}</div></div></div></td>
+        <td class="num price" data-en="${fmtNum(r.buy)}">${fmtNum(r.buy)}</td>
+        <td class="num price" data-en="${fmtNum(r.sell)}">${fmtNum(r.sell)}</td>
+        <td class="num"><span class="chg ${chgClass} num" data-en="${chgStr}">${chgStr}</span></td>
+      `;
+      tbody.appendChild(tr);
+    });
+
+    applyNumeralLanguage(currentLang);
+  }
+
+  /* Comparison panel: shows a PAST day's rates side-by-side without touching the live hero display */
+  function renderComparison(dateKey){
+    const panel = document.getElementById('comparePanel');
+    if (isToday(dateKey)) { panel.classList.remove('show'); return; }
+
+    const rates = NooriData.getRatesForDate(dateKey);
+    const todayRates = NooriData.getRatesForDate(NooriData.todayKey());
+    if (!rates) { panel.classList.remove('show'); return; }
+
+    // Date label must follow the ACTIVE calendar system (Gregorian vs Jalali), not just language
+    const d = new Date(dateKey + 'T00:00:00');
+    const jalaliActive = document.getElementById('gridJalali').style.display !== 'none';
+    const dateLabel = document.getElementById('compareDateLabel');
+    setNumText(dateLabel, formatDateOrdered(d, jalaliActive ? 'persian' : 'gregory', currentLang));
+
+    const buyLbl  = currentLang === 'fa' ? 'خرید'  : 'Buy';
+    const sellLbl = currentLang === 'fa' ? 'فروش' : 'Sell';
+    const toTodayLbl = currentLang === 'fa' ? 'تا امروز' : 'vs today';
+
+    const grid = document.getElementById('compareGrid');
+    grid.innerHTML = '';
+    NooriData.CURRENCIES.forEach(cur => {
+      const r = rates[cur.code];
+      if (!r) return;
+      const todayR = todayRates && todayRates[cur.code];
+      const diff = todayR ? pctChange(todayR.sell, r.sell) : null;
+      const diffClass = diff === null ? '' : (Math.abs(diff) < 0.005 ? 'flat' : (diff > 0 ? 'up' : 'down'));
+      const diffStr = diff === null ? '' : (Math.abs(diff) < 0.005
+        ? `0.00% ${toTodayLbl}`
+        : `${diff > 0 ? '▲' : '▼'} ${Math.abs(diff).toFixed(2)}% ${toTodayLbl}`);
+      const item = document.createElement('div');
+      item.className = 'compare-item';
+      item.innerHTML = `
+        <div class="c-lbl"><span class="c-flag">${cur.symbol}</span>${cur.code}</div>
+        <div class="c-rows">
+          <div class="c-row"><span class="c-row-lbl">${buyLbl}</span><span class="c-row-val buy num" data-en="${fmtNum(r.buy)}">${fmtNum(r.buy)}</span></div>
+          <div class="c-row"><span class="c-row-lbl">${sellLbl}</span><span class="c-row-val sell num" data-en="${fmtNum(r.sell)}">${fmtNum(r.sell)}</span></div>
+        </div>
+        <div class="c-diff ${diffClass} num" data-en="${diffStr}">${diffStr}</div>
+      `;
+      grid.appendChild(item);
+    });
+    panel.classList.add('show');
+    if (typeof gsap !== 'undefined') {
+      gsap.fromTo(panel, { opacity:0, y:-10 }, { opacity:1, y:0, duration:.4, ease:'power2.out' });
+    } else {
+      panel.style.opacity = 1;
+    }
+    applyNumeralLanguage(currentLang);
+  }
+
+  document.getElementById('compareCloseBtn').addEventListener('click', ()=> clearComparison());
+  function clearComparison(){
+    document.getElementById('comparePanel').classList.remove('show');
+    comparingDate = null;
+    renderCalendar();
+  }
+
+  function renderOccasion(dateKey){
+    const event = NooriData.getEventForDate(dateKey);
+    const wrap = document.getElementById('todayOccasion');
+    if (!event) { wrap.style.display = 'none'; return; }
+    wrap.style.display = '';
+    document.getElementById('occEnText').innerHTML = `<strong>${event.nameEn}</strong> — occasion`;
+    document.getElementById('occFaText').innerHTML = `<strong>${event.nameFa}</strong> — مناسبت`;
+  }
+
+  function setNumText(el, text){
+    // Helper: safely set text on a .num element, keeping dataset.en in sync so a later
+    // applyNumeralLanguage() call never reverts it to a stale/initial value.
+    el.dataset.en = text;
+    el.textContent = (typeof currentLang !== 'undefined' && currentLang === 'fa') ? toFaDigits(text) : text;
+  }
+
+  /* Build a correctly-ordered date string from Intl parts.
+     Intl's default fa-IR output puts year first ("۱۴۰۵ مرداد ۱۱, یکشنبه") which reads
+     wrong in Persian — we want "یکشنبه، ۱۱ مرداد ۱۴۰۵". */
+  function formatDateOrdered(d, calendar, lang){
+    const locale = lang === 'fa'
+      ? (calendar === 'persian' ? 'fa-IR-u-ca-persian' : 'fa-IR-u-ca-gregory')
+      : (calendar === 'persian' ? 'en-US-u-ca-persian' : 'en-US');
+    const parts = new Intl.DateTimeFormat(locale, {
+      weekday:'long', month:'long', day:'numeric', year:'numeric'
+    }).formatToParts(d);
+    const get = t => (parts.find(p => p.type === t) || {}).value || '';
+    if (lang === 'fa') return `${get('weekday')}، ${get('day')} ${get('month')} ${get('year')}`;
+    return `${get('weekday')}, ${get('day')} ${get('month')} ${get('year')}`;
+  }
+
+  function renderDateLabels(dateKey){
+    const d = new Date(dateKey + 'T00:00:00');
+    setNumText(document.getElementById('dateEnGregorian'), formatDateOrdered(d, 'gregory', 'en'));
+    setNumText(document.getElementById('dateFaGregorian'), formatDateOrdered(d, 'gregory', 'fa'));
+    setNumText(document.getElementById('dateFaJalali'),   formatDateOrdered(d, 'persian', 'fa'));
+    setNumText(document.getElementById('dateEnJalali'),   formatDateOrdered(d, 'persian', 'en'));
+  }
+
+  function isToday(dateKey){ return dateKey === NooriData.todayKey(); }
+
+  function renderEventList(){
+    const events = NooriData.getAllEvents();
+    const body = document.getElementById('eventListBody');
+    body.innerHTML = '';
+    const upcoming = Object.keys(events).sort().filter(k => k >= NooriData.todayKey()).slice(0, 1);
+    const recentAndUpcoming = Object.keys(events).sort().slice(-4); // show a handful of known occasions
+    const keys = recentAndUpcoming.length ? recentAndUpcoming : upcoming;
+    if (!keys.length) {
+      body.innerHTML = `<div class="event-row"><div class="event-info"><div class="event-tag" data-lang="en">No occasions added yet</div><div class="event-tag" data-lang="fa">هنوز مناسبتی ثبت نشده</div></div></div>`;
+      return;
+    }
+    keys.forEach(dateKey => {
+      const ev = events[dateKey];
+      const d = new Date(dateKey + 'T00:00:00');
+      const dayNumEn = d.getDate();
+      const dayNumFa = new Intl.DateTimeFormat('fa-IR-u-ca-persian', { day:'numeric' }).format(d);
+      const row = document.createElement('div');
+      row.className = 'event-row';
+      row.style.cursor = 'pointer';
+      row.innerHTML = `
+        <div class="event-day num cal-gregorian" data-en="${dayNumEn}">${dayNumEn}</div>
+        <div class="event-day num cal-jalali" style="display:none" data-en="${dayNumFa}">${dayNumFa}</div>
+        <div class="event-info">
+          <div class="event-name"><span data-lang="en">${ev.nameEn}</span><span data-lang="fa">${ev.nameFa}</span></div>
+          <div class="event-tag"><span data-lang="en">Occasion</span><span data-lang="fa">مناسبت</span></div>
+        </div>
+        <span class="event-mark ${isToday(dateKey) ? 'gold' : ''}">
+          <span data-lang="en">${isToday(dateKey) ? 'Today' : ''}</span>
+          <span data-lang="fa">${isToday(dateKey) ? 'امروز' : ''}</span>
+        </span>
+      `;
+      row.addEventListener('click', ()=> onCalendarDayClick(dateKey));
+      body.appendChild(row);
+    });
+    applyNumeralLanguage(currentLang);
+  }
+
+  function renderGregorianCalendar(){
+    const daysEl = document.getElementById('daysGregorian');
+    const year = calendarCursor.getFullYear();
+    const month = calendarCursor.getMonth();
+    const firstDay = new Date(year, month, 1);
+    const startWeekday = firstDay.getDay(); // 0=Sun
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const daysInPrevMonth = new Date(year, month, 0).getDate();
+
+    daysEl.innerHTML = '';
+    for (let i = startWeekday - 1; i >= 0; i--) {
+      const span = document.createElement('span');
+      span.className = 'day muted num';
+      const n = daysInPrevMonth - i;
+      span.dataset.en = n; span.textContent = n;
+      daysEl.appendChild(span);
+    }
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dateObj = new Date(year, month, day);
+      const dateKey = NooriData.toLocalDateKey(dateObj);
+      const span = document.createElement('span');
+      let cls = 'day num';
+      if (isToday(dateKey)) cls += ' today';
+      if (dateKey === comparingDate) cls += ' selected-compare';
+      if (NooriData.getEventForDate(dateKey)) cls += ' event';
+      if (NooriData.getAllDates().indexOf(dateKey) !== -1) cls += ' has-data';
+      span.className = cls;
+      span.dataset.en = day; span.textContent = day;
+      span.dataset.date = dateKey;
+      if (dateKey <= NooriData.todayKey()) {
+        span.addEventListener('click', ()=> onCalendarDayClick(dateKey));
+      } else {
+        cls += ' future';
+        span.className = cls;      // future days can't be picked, same as the panel
+      }
+      daysEl.appendChild(span);
+    }
+    const totalCells = startWeekday + daysInMonth;
+    const trailing = (7 - (totalCells % 7)) % 7;
+    for (let i = 1; i <= trailing; i++) {
+      const span = document.createElement('span');
+      span.className = 'day muted num';
+      span.dataset.en = i; span.textContent = i;
+      daysEl.appendChild(span);
+    }
+
+    const enLabel = new Intl.DateTimeFormat('en-US', { month:'long', year:'numeric' }).format(calendarCursor);
+    const faLabel = new Intl.DateTimeFormat('fa-IR-u-ca-gregory', { month:'long', year:'numeric' }).format(calendarCursor);
+    document.querySelectorAll('#calMonthLabel .cal-gregorian[data-lang="en"]').forEach(el=> el.textContent = enLabel);
+    document.querySelectorAll('#calMonthLabel .cal-gregorian[data-lang="fa"]').forEach(el=> el.textContent = faLabel);
+
+    applyNumeralLanguage(currentLang);
+  }
+
+  /* ---------- Real Jalali month grid ----------
+     jalaliCursor = { year, month } in the Persian calendar (month: 1-12).
+     We find the Gregorian date range for that Jalali month by scanning outward
+     from a seed date — reliable without needing a full Jalali conversion library,
+     since Intl already does the conversion per-date for us. */
+  function getJalaliYearMonth(dateObj){
+    const parts = new Intl.DateTimeFormat('en-US-u-ca-persian', { year:'numeric', month:'numeric' }).formatToParts(dateObj);
+    const y = parseInt(parts.find(p=>p.type==='year').value, 10);
+    const m = parseInt(parts.find(p=>p.type==='month').value, 10);
+    return { year:y, month:m };
+  }
+  function jalaliMonthToGregorianRange(jy, jm){
+    // seed: walk from a rough Gregorian estimate to find the 1st of the Jalali month
+    let seed = new Date(Date.UTC(jy - 622, (jm - 1), 1)); // very rough starting point, corrected below
+    // Reliable approach: scan day-by-day around today's offset until Jalali (y,m) matches and day===1
+    // Start scanning from ~365*(jy-currentJalaliYear) days from today for performance, then walk to day 1.
+    const todayJalali = getJalaliYearMonth(new Date());
+    const yearDiff = jy - todayJalali.year;
+    const monthDiff = (jm - todayJalali.month);
+    let approxDays = yearDiff * 365 + monthDiff * 30;
+    let cursor = new Date();
+    cursor.setDate(cursor.getDate() + approxDays);
+    // walk backward/forward to land exactly on day 1 of target Jalali month
+    for (let guard = 0; guard < 60; guard++) {
+      const jd = new Intl.DateTimeFormat('en-US-u-ca-persian', { year:'numeric', month:'numeric', day:'numeric' }).formatToParts(cursor);
+      const cy = parseInt(jd.find(p=>p.type==='year').value,10);
+      const cm = parseInt(jd.find(p=>p.type==='month').value,10);
+      const cd = parseInt(jd.find(p=>p.type==='day').value,10);
+      if (cy === jy && cm === jm) {
+        // found the right month; step back to day 1
+        cursor.setDate(cursor.getDate() - (cd - 1));
+        break;
+      }
+      // step by whole months toward target
+      const diffMonths = (jy - cy) * 12 + (jm - cm);
+      cursor.setDate(cursor.getDate() + diffMonths * 30);
+    }
+    const firstOfMonth = new Date(cursor);
+    // find days in this Jalali month by walking forward until month changes
+    let daysInMonth = 0;
+    let probe = new Date(firstOfMonth);
+    for (let guard = 0; guard < 32; guard++) {
+      const jd = new Intl.DateTimeFormat('en-US-u-ca-persian', { month:'numeric' }).formatToParts(probe);
+      const pm = parseInt(jd.find(p=>p.type==='month').value,10);
+      if (pm !== jm) break;
+      daysInMonth++;
+      probe.setDate(probe.getDate() + 1);
+    }
+    return { firstOfMonth, daysInMonth };
+  }
+
+  let jalaliCursor = getJalaliYearMonth(new Date());
+
+  function renderJalaliCalendar(){
+    const daysEl = document.getElementById('daysJalali');
+    const { firstOfMonth, daysInMonth } = jalaliMonthToGregorianRange(jalaliCursor.year, jalaliCursor.month);
+    // Persian week starts Saturday; JS getDay() 0=Sun..6=Sat -> convert to Sat-first index
+    const startWeekday = (firstOfMonth.getDay() + 1) % 7;
+
+    daysEl.innerHTML = '';
+    for (let i = 0; i < startWeekday; i++) {
+      const span = document.createElement('span');
+      span.className = 'day muted num';
+      span.textContent = '';
+      daysEl.appendChild(span);
+    }
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dateObj = new Date(firstOfMonth);
+      dateObj.setDate(firstOfMonth.getDate() + (day - 1));
+      const dateKey = NooriData.toLocalDateKey(dateObj);
+      const span = document.createElement('span');
+      let cls = 'day num';
+      if (isToday(dateKey)) cls += ' today';
+      if (dateKey === comparingDate) cls += ' selected-compare';
+      if (NooriData.getEventForDate(dateKey)) cls += ' event';
+      if (NooriData.getAllDates().indexOf(dateKey) !== -1) cls += ' has-data';
+      span.className = cls;
+      span.dataset.en = day; span.textContent = day;
+      span.dataset.date = dateKey;
+      if (dateKey <= NooriData.todayKey()) {
+        span.addEventListener('click', ()=> onCalendarDayClick(dateKey));
+      } else {
+        cls += ' future';
+        span.className = cls;      // future days can't be picked, same as the panel
+      }
+      daysEl.appendChild(span);
+    }
+
+    const jalaliMonthNames = ['فروردین','اردیبهشت','خرداد','تیر','مرداد','شهریور','مهر','آبان','آذر','دی','بهمن','اسفند'];
+    const jalaliMonthNamesEn = ['Farvardin','Ordibehesht','Khordad','Tir','Mordad','Shahrivar','Mehr','Aban','Azar','Dey','Bahman','Esfand'];
+    const faLabel = `${jalaliMonthNames[jalaliCursor.month-1]} ${toFaDigits(String(jalaliCursor.year))}`;
+    const enLabel = `${jalaliMonthNamesEn[jalaliCursor.month-1]} ${jalaliCursor.year}`;
+    document.querySelectorAll('#calMonthLabel .cal-jalali[data-lang="en"]').forEach(el=> el.textContent = enLabel);
+    document.querySelectorAll('#calMonthLabel .cal-jalali[data-lang="fa"]').forEach(el=> el.textContent = faLabel);
+
+    applyNumeralLanguage(currentLang);
+  }
+
+  function renderCalendar(){
+    renderGregorianCalendar();
+    renderJalaliCalendar();
+  }
+
+  /* Called once at load and by live polling — always paints TODAY into the hero display */
+  /* ---------- Interactive price history chart ---------- */
+
+  function getHistorySeries(code, days){
+    const all = NooriData.getAllDates().sort();
+    const today = NooriData.todayKey();
+    const recent = all.filter(d => d <= today).slice(-days);
+    return recent.map(dateKey => {
+      const r = NooriData.getRatesForDate(dateKey);
+      return (r && r[code]) ? { date: dateKey, buy: r[code].buy, sell: r[code].sell } : null;
+    }).filter(Boolean);
+  }
+
+  function renderSeriesToggles(){
+    const wrap = document.getElementById('chartSeries');
+    if (!wrap) return;
+    wrap.innerHTML = '';
+    NooriData.CURRENCIES.forEach(function(cur){
+      const on = chartSeriesOn.indexOf(cur.code) !== -1;
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = on ? 'on' : '';
+      b.style.color = SERIES_COLORS[cur.code] || 'var(--muted)';
+      b.innerHTML = '<span class="dotc"></span>' + cur.code;
+      b.addEventListener('click', function(){
+        const i = chartSeriesOn.indexOf(cur.code);
+        if (i === -1) chartSeriesOn.push(cur.code);
+        else if (chartSeriesOn.length > 1) chartSeriesOn.splice(i, 1);  // never empty
+        renderSeriesToggles();
+        renderSparkline();
+        render30DayRange(chartSeriesOn[0]);
+      });
+      wrap.appendChild(b);
+    });
+  }
+
+  function renderSparkline(){
+    const svg = document.getElementById('sparkSvg');
+    const wrap = document.getElementById('sparkWrap');
+    const axis = document.getElementById('chartAxis');
+    if (!svg) return;
+
+    const asked = chartSeriesOn.map(code => ({ code: code, data: getHistorySeries(code, chartRange) }));
+    const sets  = asked.filter(s => s.data.length >= 2);
+    const thin  = asked.filter(s => s.data.length < 2).map(s => s.code);
+    wrap.style.display = '';
+    const note = document.getElementById('chartNote');
+    if (!sets.length) {
+      // a brand-new currency has only today's rate — say so instead of vanishing
+      svg.innerHTML = '';
+      if (axis) axis.innerHTML = '';
+      if (note) {
+        note.style.display = 'block';
+        note.textContent = currentLang === 'fa'
+          ? 'برای ' + thin.join('، ') + ' هنوز تاریخچه‌ی کافی ثبت نشده است'
+          : 'Not enough history recorded yet for ' + thin.join(', ');
+      }
+      const d0 = document.getElementById('sparkDelta');
+      if (d0) { d0.className = 'spark-delta num flat'; setNumText(d0, '—'); }
+      return;
+    }
+    if (note) {
+      if (thin.length) {
+        note.style.display = 'block';
+        note.textContent = currentLang === 'fa'
+          ? thin.join('، ') + ' تاریخچه‌ی کافی ندارد و رسم نشد'
+          : thin.join(', ') + ' has no history yet and was skipped';
+      } else note.style.display = 'none';
+    }
+
+    const rect = svg.getBoundingClientRect();
+    const W = Math.max(200, Math.round(rect.width || 300));
+    // read the rendered height so the taller desktop chart actually uses its space
+    const H = Math.max(80, Math.round(rect.height || 100));
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    svg.removeAttribute('preserveAspectRatio');
+
+    const padY = 12, padX = 8;
+    const gridY = [padY, H/2, H - padY].map(y =>
+      `<line class="chart-grid-line" x1="0" y1="${y}" x2="${W}" y2="${y}" opacity=".4"/>`).join('');
+
+    let defs = '', paths = '';
+    chartPoints = [];              // hover uses the FIRST selected series
+    sets.forEach(function(s, idx){
+      const vals = s.data.map(p => p.sell);
+      const min = Math.min(...vals), max = Math.max(...vals);
+      const span = (max - min) || 1;
+      const stepX = (W - padX*2) / (s.data.length - 1);
+      const pts = s.data.map(function(p, i){
+        const x = padX + i * stepX;
+        const y = H - padY - ((p.sell - min) / span) * (H - padY*2);
+        return Object.assign({}, p, { x: x, y: y });
+      });
+      if (idx === 0) chartPoints = pts;
+
+      const colour = SERIES_COLORS[s.code] || 'var(--gold-1)';
+      const line = pts.map((p,i)=> `${i===0?'M':'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+      const last = pts[pts.length-1];
+
+      // only the primary series gets a filled area, otherwise it turns to mud
+      if (idx === 0) {
+        defs += `<linearGradient id="grad0" x1="0" y1="0" x2="0" y2="1">
+                   <stop offset="0%" stop-color="${colour}" stop-opacity="0.35"/>
+                   <stop offset="100%" stop-color="${colour}" stop-opacity="0"/>
+                 </linearGradient>`;
+        paths += `<path d="${line} L${last.x.toFixed(1)},${H} L${pts[0].x.toFixed(1)},${H} Z" fill="url(#grad0)"/>`;
+      }
+      paths += `<path class="spark-line" d="${line}" stroke="${colour}" stroke-width="${idx===0?2.2:1.6}"
+                      ${idx>0?'stroke-dasharray="4 3"':''} fill="none"/>`;
+      paths += `<circle cx="${last.x.toFixed(1)}" cy="${last.y.toFixed(1)}" r="${idx===0?4:3}" fill="${colour}"/>`;
+    });
+
+    svg.innerHTML = `<defs>${defs}</defs>${gridY}${paths}
+      <line class="chart-crosshair" id="chartCrosshair" x1="0" y1="0" x2="0" y2="${H}" style="display:none"/>
+      <circle class="chart-hover-dot" id="chartHoverDot" r="5" style="display:none"/>`;
+
+    // axis labels follow the primary series and the active calendar
+    const primary = sets[0].data;
+    if (axis) {
+      const jalaliActive = document.getElementById('gridJalali').style.display !== 'none';
+      const shortDate = function(dateKey){
+        const d = new Date(dateKey + 'T00:00:00');
+        const loc = currentLang === 'fa'
+          ? (jalaliActive ? 'fa-IR-u-ca-persian' : 'fa-IR-u-ca-gregory')
+          : (jalaliActive ? 'en-US-u-ca-persian' : 'en-US');
+        return new Intl.DateTimeFormat(loc, { month:'short', day:'numeric' }).format(d);
+      };
+      const mid = primary[Math.floor(primary.length/2)];
+      axis.innerHTML = `<span>${shortDate(primary[0].date)}</span>
+                        <span>${shortDate(mid.date)}</span>
+                        <span>${shortDate(primary[primary.length-1].date)}</span>`;
+    }
+
+    const first = primary[0].sell, latest = primary[primary.length-1].sell;
+    const pct = ((latest - first) / first) * 100;
+    const flat = Math.abs(pct) < 0.005;
+    const deltaEl = document.getElementById('sparkDelta');
+    deltaEl.className = 'spark-delta num ' + (flat ? 'flat' : (pct > 0 ? 'up' : 'down'));
+    setNumText(deltaEl, flat ? '0.00%' : `${pct > 0 ? '▲' : '▼'} ${Math.abs(pct).toFixed(2)}%`);
+  }
+
+  /* Hover / tap anywhere on the chart to inspect that day's buy & sell */
+  function initChartInteraction(){
+    const svg = document.getElementById('sparkSvg');
+    const holder = document.getElementById('chartHolder');
+    const tip = document.getElementById('chartTooltip');
+    if (!svg || !holder || !tip) return;
+
+    function showAt(clientX){
+      if (!chartPoints.length) return;
+      const rect = svg.getBoundingClientRect();
+      // viewBox is now 1:1 with pixels, so no scaling conversion is needed
+      const relX = clientX - rect.left;
+      let nearest = chartPoints[0], best = Infinity;
+      chartPoints.forEach(p => {
+        const d = Math.abs(p.x - relX);
+        if (d < best) { best = d; nearest = p; }
+      });
+
+      const crosshair = document.getElementById('chartCrosshair');
+      const dot = document.getElementById('chartHoverDot');
+      if (crosshair) { crosshair.setAttribute('x1', nearest.x); crosshair.setAttribute('x2', nearest.x); crosshair.style.display = ''; }
+      if (dot) { dot.setAttribute('cx', nearest.x); dot.setAttribute('cy', nearest.y); dot.style.display = ''; }
+
+      const d = new Date(nearest.date + 'T00:00:00');
+      const jalaliActive = document.getElementById('gridJalali').style.display !== 'none';
+      document.getElementById('ttDate').textContent =
+        formatDateOrdered(d, jalaliActive ? 'persian' : 'gregory', currentLang);
+      document.getElementById('ttBuyLbl').textContent  = currentLang === 'fa' ? 'خرید' : 'Buy';
+      document.getElementById('ttSellLbl').textContent = currentLang === 'fa' ? 'فروش' : 'Sell';
+      const fmt = v => currentLang === 'fa' ? toFaDigits(fmtNum(v)) : fmtNum(v);
+      document.getElementById('ttBuy').textContent  = fmt(nearest.buy);
+      document.getElementById('ttSell').textContent = fmt(nearest.sell);
+
+      tip.style.left = Math.max(70, Math.min(rect.width - 70, nearest.x)) + 'px';
+      tip.style.top = nearest.y + 'px';
+      tip.classList.add('show');
+    }
+    function hide(){
+      tip.classList.remove('show');
+      const crosshair = document.getElementById('chartCrosshair');
+      const dot = document.getElementById('chartHoverDot');
+      if (crosshair) crosshair.style.display = 'none';
+      if (dot) dot.style.display = 'none';
+    }
+
+    holder.addEventListener('mousemove', e => showAt(e.clientX));
+    holder.addEventListener('mouseleave', hide);
+    holder.addEventListener('touchstart', e => { if (e.touches[0]) showAt(e.touches[0].clientX); }, { passive:true });
+    holder.addEventListener('touchmove',  e => { if (e.touches[0]) showAt(e.touches[0].clientX); }, { passive:true });
+    holder.addEventListener('touchend', hide);
+
+    document.getElementById('chartRanges').addEventListener('click', e => {
+      const btn = e.target.closest('button[data-range]');
+      if (!btn) return;
+      chartRange = parseInt(btn.dataset.range, 10);
+      document.querySelectorAll('#chartRanges button').forEach(b => b.classList.toggle('active', b === btn));
+      renderSparkline();
+      render30DayRange(chartSeriesOn[0]);
+      hide();
+    });
+
+    // viewBox is pixel-based, so it must be rebuilt whenever the container resizes
+    let resizeT;
+    window.addEventListener('resize', ()=>{
+      clearTimeout(resizeT);
+      resizeT = setTimeout(()=>{ renderSparkline(); hide(); }, 150);
+    });
+  }
+
+  function render30DayRange(code){
+    const series = getHistorySeries(code, chartRange);
+    const lowEl = document.getElementById('range30Low');
+    const highEl = document.getElementById('range30High');
+    const marker = document.getElementById('rangeMarker');
+    if (!series.length || !lowEl) return;
+    const vals = series.map(p => p.sell);
+    const min = Math.min(...vals), max = Math.max(...vals);
+    const current = vals[vals.length - 1];
+    setNumText(lowEl, fmtNum(min));
+    setNumText(highEl, fmtNum(max));
+    const pos = max === min ? 50 : ((current - min) / (max - min)) * 100;
+    if (marker) marker.style.left = pos.toFixed(1) + '%';
+  }
+
+  /* ---------- Quick converter (bidirectional, custom pickers) ---------- */
+  const TOMAN = { code:'TMN', symbol:'\u00a0', nameEn:'Toman', nameFa:'تومان' };
+  let convFrom = 'GBP';
+  let convTo   = 'TMN';
+
+  function convList(){ return NooriData.CURRENCIES.concat([TOMAN]); }
+  /* Turn any <select> into a themed dropdown. The native popup list is rendered by
+     the operating system, so it can never match the site's theme — this replaces it. */
+  function enhanceSelect(sel){
+    if (!sel || sel.dataset.enhanced) return;
+    sel.dataset.enhanced = '1';
+    sel.style.display = 'none';
+
+    const wrap = document.createElement('div');
+    wrap.className = 'nsel';
+    const btn = document.createElement('button');
+    btn.type = 'button'; btn.className = 'nsel-btn';
+    const lbl = document.createElement('span');
+    const car = document.createElement('span'); car.className = 'nsel-car';
+    btn.append(lbl, car);
+    const menu = document.createElement('div'); menu.className = 'nsel-menu';
+    wrap.append(btn, menu);
+    sel.parentNode.insertBefore(wrap, sel);
+    wrap.appendChild(sel);
+
+    function paint(){
+      const o = sel.options[sel.selectedIndex];
+      lbl.textContent = o ? o.textContent : '';
+      menu.innerHTML = '';
+      Array.from(sel.options).forEach(function(opt, i){
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'nsel-opt' + (i === sel.selectedIndex ? ' sel' : '');
+        b.textContent = opt.textContent;
+        b.addEventListener('click', function(e){
+          e.stopPropagation();
+          sel.selectedIndex = i;
+          sel.dispatchEvent(new Event('change', { bubbles:true }));
+          close(); paint();
+        });
+        menu.appendChild(b);
+      });
+    }
+    function place(){
+      const r = btn.getBoundingClientRect();
+      menu.style.visibility = 'hidden'; menu.style.left = '0px'; menu.style.top = '0px';
+      const mw = Math.max(menu.offsetWidth, r.width), mh = menu.offsetHeight || 200;
+      let left = r.left, top = r.bottom + 6;
+      if (left + mw > window.innerWidth - 12) left = window.innerWidth - mw - 12;
+      if (left < 12) left = 12;
+      if (top + mh > window.innerHeight - 12 && r.top - mh - 6 > 12) top = r.top - mh - 6;
+      menu.style.minWidth = r.width + 'px';
+      menu.style.left = left + 'px'; menu.style.top = top + 'px';
+      menu.style.visibility = '';
+    }
+    function open(){ closeAllSelects(); wrap.classList.add('open'); place(); }
+    function close(){ wrap.classList.remove('open'); }
+    btn.addEventListener('click', function(e){
+      e.stopPropagation();
+      wrap.classList.contains('open') ? close() : open();
+    });
+    wrap._closeNsel = close;
+    paint();
+    sel.addEventListener('change', paint);
+    // fired when code changes the selection (e.g. the swap button) — without this
+    // the visible label kept showing the old currency after a swap
+    sel.addEventListener('nsel-repaint', paint);
+  }
+  function closeAllSelects(){
+    document.querySelectorAll('.nsel.open').forEach(function(w){ w.classList.remove('open'); });
+  }
+  document.addEventListener('click', closeAllSelects);
+  window.addEventListener('resize', closeAllSelects);
+  function enhanceAllSelects(){ document.querySelectorAll('select').forEach(enhanceSelect); }
+
+
+  /* Everything converts through Toman as the pivot currency. */
+  function toTomanRate(code){
+    if (code === 'TMN') return 1;
+    const rates = NooriData.getRatesForDate(NooriData.todayKey());
+    const r = rates && rates[code];
+    return r ? r.sell : null;
+  }
+
+  function convMeta(code){
+    const list = NooriData.getCurrencies();
+    if (code === 'TMN') return { code:'TMN', symbol:'\u062a', nameEn:'Toman', nameFa:'تومان' };
+    return list.find(x => x.code === code) || list[0];
+  }
+
+  function fillConvSelect(sel, selected){
+    if (!sel) return;
+    const fa = currentLang === 'fa';
+    const opts = NooriData.getCurrencies().map(c2 =>
+      `<option value="${c2.code}">${c2.symbol}  ${c2.code} — ${fa ? c2.nameFa : c2.nameEn}</option>`).join('');
+    sel.innerHTML = opts +
+      `<option value="TMN">\u062a  TMN — ${fa ? 'تومان' : 'Toman'}</option>`;
+    sel.value = selected;
+  }
+
+  function refreshConverterUI(){
+    const f = document.getElementById('convFrom');
+    const t = document.getElementById('convTo');
+    fillConvSelect(f, convFrom);
+    fillConvSelect(t, convTo);
+    if (f) f.dispatchEvent(new Event('nsel-repaint'));
+    if (t) t.dispatchEvent(new Event('nsel-repaint'));
+  }
+
+  function initConverter(){
+    const f = document.getElementById('convFrom');
+    const t = document.getElementById('convTo');
+    if (!f || !t) return;
+    refreshConverterUI();
+    enhanceSelect(f); enhanceSelect(t);
+    f.addEventListener('change', function(){
+      convFrom = f.value;
+      if (convFrom === convTo) { convTo = (convFrom === 'TMN') ? NooriData.getCurrencies()[0].code : 'TMN'; }
+      refreshConverterUI(); updateConverter();
+    });
+    t.addEventListener('change', function(){
+      convTo = t.value;
+      if (convTo === convFrom) { convFrom = (convTo === 'TMN') ? NooriData.getCurrencies()[0].code : 'TMN'; }
+      refreshConverterUI(); updateConverter();
+    });
+    let swapTurns = 0;
+    document.getElementById('convSwap').addEventListener('click', function(){
+      const tmp = convFrom; convFrom = convTo; convTo = tmp;
+      refreshConverterUI(); updateConverter();
+      // accumulate the angle so it carries on from where it stopped, never rewinds
+      swapTurns += 180;
+      this.style.transform = 'rotate(' + swapTurns + 'deg)';
+      this.blur();
+    });
+    document.getElementById('convAmount').addEventListener('input', updateConverter);
+    document.getElementById('convCopy').addEventListener('click', copyConversion);
+    updateConverter();
+  }
+
+  function updateConverter(){
+    const out = document.getElementById('convResult');
+    if (!out) return;
+    const amt = parseFloat(document.getElementById('convAmount').value);
+    const fromRate = toTomanRate(convFrom);
+    const toRate   = toTomanRate(convTo);
+    if (isNaN(amt) || !fromRate || !toRate) { setNumText(out, '—'); return; }
+    const result = (amt * fromRate) / toRate;
+    // pick a precision that stays meaningful across very different magnitudes
+    let text;
+    if (result >= 1000)      text = fmtNum(result);
+    else if (result >= 1)    text = result.toLocaleString('en-US', { maximumFractionDigits: 2 });
+    else if (result >= 0.01) text = result.toLocaleString('en-US', { maximumFractionDigits: 4 });
+    else                     text = result.toLocaleString('en-US', { maximumFractionDigits: 8 });
+    setNumText(out, text);
+  }
+
+  function copyConversion(){
+    const btn = document.getElementById('convCopy');
+    const amt = document.getElementById('convAmount').value;
+    const result = document.getElementById('convResult').dataset.en || '';
+    const text = amt + ' ' + convFrom + ' = ' + result + ' ' + convTo + ' — Noori Exchange';
+    const done = function(){ btn.classList.add('copied'); setTimeout(function(){ btn.classList.remove('copied'); }, 1400); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(function(){});
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); done(); } catch(e){}
+      ta.remove();
+    }
+  }
+
+
+  function renderUpdateTime(){
+    const rates = NooriData.getRatesForDate(NooriData.todayKey());
+    let text = '--:--';
+    if (rates && rates._updatedAt) {
+      const t = new Date(rates._updatedAt);
+      const hh = String(t.getHours()).padStart(2,'0');
+      const mm = String(t.getMinutes()).padStart(2,'0');
+      text = `${hh}:${mm}`;
+    }
+    const h = document.getElementById('headerUpdateTime');
+    const p = document.getElementById('panelUpdateTime');
+    if (h) setNumText(h, text);
+    if (p) setNumText(p, text);
+  }
+
+
+  /* ---------- social links, driven by the admin panel's list ---------- */
+  const SOCIAL_META = {
+    instagram:{ name:'Instagram', nameFa:'اینستاگرام', icon:'◉', color:'#E1306C' },
+    telegram: { name:'Telegram',  nameFa:'تلگرام',     icon:'✈', color:'#29A9EA' },
+    whatsapp: { name:'WhatsApp',  nameFa:'واتساپ',     icon:'✆', color:'#25D366' },
+    x:        { name:'X',         nameFa:'ایکس',       icon:'✕', color:'#111111' },
+    facebook: { name:'Facebook',  nameFa:'فیسبوک',     icon:'f', color:'#1877F2' },
+    linkedin: { name:'LinkedIn',  nameFa:'لینکدین',    icon:'in',color:'#0A66C2' },
+    youtube:  { name:'YouTube',   nameFa:'یوتیوب',     icon:'▶', color:'#FF0000' },
+    website:  { name:'Website',   nameFa:'وب‌سایت',    icon:'⌂', color:'#8A6318' }
+  };
+  function renderSocialLinks(){
+    const row = document.querySelector('.social-row');
+    if (!row) return;
+    let list = [];
+    try {
+      const raw = localStorage.getItem('noori_exchange_socials_v1');
+      if (raw) list = JSON.parse(raw) || [];
+    } catch(e){ list = []; }
+    if (!Array.isArray(list) || !list.length) return;   // keep the built-in defaults
+    row.innerHTML = '';
+    list.forEach(function(item){
+      const m = SOCIAL_META[item.type] || SOCIAL_META.website;
+      // only render links we know are safe to open
+      if (!/^https?:\/\//i.test(item.url)) return;
+      const a = document.createElement('a');
+      a.className = 'social-link';
+      a.href = item.url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+      a.innerHTML = '<span class="social-icon" style="color:' + m.color + '">' + m.icon + '</span>' +
+                    '<span>' + (currentLang === 'fa' ? m.nameFa : m.name) + '</span>';
+      row.appendChild(a);
+    });
+  }
+
+  function renderContactInfo(){
+    const c = NooriData.getContact();
+    const digitsOnly = s => String(s).replace(/[^0-9+]/g, '');
+
+    const phoneLink = document.getElementById('contactPhoneLink');
+    const phoneVal  = document.getElementById('contactPhoneVal');
+    if (phoneLink) phoneLink.href = 'tel:' + digitsOnly(c.phone);
+    if (phoneVal)  setNumText(phoneVal, c.phone);
+
+    // WhatsApp deep-links need the international form without leading zero
+    const waNum = digitsOnly(c.whatsapp).replace(/^0/, '98');
+    const waLink = document.getElementById('contactWhatsappLink');
+    const waVal  = document.getElementById('contactWhatsappVal');
+    if (waLink) waLink.href = 'https://wa.me/' + waNum;
+    if (waVal)  setNumText(waVal, c.whatsapp);
+
+    const ig = document.getElementById('socialInstagram');
+    const tg = document.getElementById('socialTelegram');
+    if (ig) ig.href = c.instagram;
+    if (tg) tg.href = c.telegram;
+  }
+
+  function paintToday(){
+    const today = NooriData.todayKey();
+    renderRates(today);
+    renderOccasion(today);
+    renderDateLabels(today);
+    renderUpdateTime();
+    renderSparkline();
+    render30DayRange(chartSeriesOn[0]);
+    updateConverter();
+    if (window.NooriCoin) window.NooriCoin.refresh();
+  }
+
+  /* Called when a calendar day is clicked. Today stays in the hero; past days open the comparison panel. */
+  function onCalendarDayClick(dateKey){
+    if (dateKey > NooriData.todayKey()) return; // no future rates to show
+    if (isToday(dateKey)) {
+      clearComparison();
+      return;
+    }
+    comparingDate = dateKey;
+    renderComparison(dateKey);
+    renderCalendar(); // refresh selection highlight
+    // scroll the comparison panel into view with a smooth animation
+    const panel = document.getElementById('comparePanel');
+    panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  document.getElementById('calPrevBtn').addEventListener('click', ()=> navigateCalendar(-1));
+  document.getElementById('calNextBtn').addEventListener('click', ()=> navigateCalendar(1));
+  document.getElementById('calTodayBtn').addEventListener('click', ()=>{
+    const today = NooriData.todayKey();
+    calendarCursor = new Date(today + 'T00:00:00');
+    jalaliCursor = getJalaliYearMonth(new Date(today + 'T00:00:00'));
+    clearComparison();
+    renderCalendar();
+  });
+
+  /* Arrow glyphs must match reading direction: in RTL "previous" points right (›). */
+  function updateNavArrowGlyphs(){
+    const rtl = document.documentElement.getAttribute('dir') === 'rtl';
+    const prev = document.getElementById('calPrevBtn');
+    const next = document.getElementById('calNextBtn');
+    const today = document.getElementById('calTodayBtn');
+    if (!prev || !next) return;
+    // Explicit order + glyph, so placement never depends on how flex inherits `dir`.
+    // LTR: [‹ prev][Today][next ›]   RTL: [‹ next][Today][prev ›]
+    prev.textContent = rtl ? '\u203a' : '\u2039';
+    next.textContent = rtl ? '\u2039' : '\u203a';
+    /* Order stays fixed: in RTL the lower order already renders further right,
+       which is exactly where "previous" belongs. Only the glyph flips. */
+    prev.style.order = '1';
+    if (today) today.style.order = '2';
+    next.style.order = '3';
+  }
+
+  function navigateCalendar(direction){
+    const jalaliActive = document.getElementById('gridJalali').style.display !== 'none';
+    if (jalaliActive) {
+      let { year, month } = jalaliCursor;
+      month += direction;
+      if (month > 12) { month = 1; year++; }
+      if (month < 1) { month = 12; year--; }
+      jalaliCursor = { year, month };
+      renderJalaliCalendar();
+    } else {
+      calendarCursor = new Date(calendarCursor.getFullYear(), calendarCursor.getMonth() + direction, 1);
+      renderGregorianCalendar();
+    }
+  }
+
+  /* initial paint */
+  initConverter();
+  renderSeriesToggles();
+  initChartInteraction();
+  paintToday();
+  renderEventList();
+  renderCalendar();
+  renderContactInfo();
+  renderSocialLinks();
+  updateNavArrowGlyphs();
+
+  /* keep contact details in sync if the admin panel changes them (same browser) */
+  window.addEventListener('storage', (e)=>{ if (e.key === 'noori_exchange_contact_v1') renderContactInfo(); });
+  window.addEventListener('noori-contact-updated', renderContactInfo);
+  window.addEventListener('noori-socials-updated', renderSocialLinks);
+  window.addEventListener('storage', function(e){
+    if (e.key === 'noori_exchange_socials_v1') renderSocialLinks();
+  });
+
+  /* live polling: check for new/changed rates every 5s. Always keeps TODAY's hero display
+     current — comparing a past day (comparingDate) never blocks this, since the comparison
+     panel is a separate UI element that doesn't touch the hero. */
+  let lastKnownUpdatedAt = null;
+  let lastKnownToday = NooriData.todayKey();
+  function checkForLiveUpdate(){
+    const today = NooriData.todayKey();
+    if (today !== lastKnownToday) {
+      // date rolled over (e.g. page left open past midnight) — repaint everything for the new day
+      lastKnownToday = today;
+      paintToday();
+      renderEventList();
+      renderCalendar();
+      if (comparingDate) renderComparison(comparingDate);
+      return;
+    }
+    const latest = NooriData.getRatesForDate(today);
+    const updatedAt = latest && latest._updatedAt;
+    if (updatedAt && updatedAt !== lastKnownUpdatedAt) {
+      lastKnownUpdatedAt = updatedAt;
+      paintToday();
+      renderEventList();
+      renderCalendar();
+      if (comparingDate) renderComparison(comparingDate); // keep comparison's "vs today" diff current too
+      flashLiveBadge();
+    }
+  }
+  function flashLiveBadge(){
+    const badge = document.getElementById('liveBadge');
+    if (typeof gsap !== 'undefined') {
+      gsap.fromTo(badge, { scale: 1 }, { scale: 1.12, duration:.2, yoyo:true, repeat:1, ease:'power2.inOut' });
+    }
+  }
+  setInterval(checkForLiveUpdate, 5000);
+
+  /* demo auto-reset: check every minute while the page is open */
+  setInterval(()=>{
+    if (NooriData.enforceDemoReset()) {
+      NooriData.seedIfEmpty();
+      comparingDate = null;
+      document.getElementById('comparePanel').classList.remove('show');
+      paintToday(); renderEventList(); renderCalendar(); renderContactInfo();
+    }
+  }, 60000);
+  window.addEventListener('storage', (e)=>{
+    if (e.key === 'noori_exchange_rates_v1' || e.key === 'noori_exchange_events_v1') checkForLiveUpdate();
+  });
+  window.addEventListener('noori-rates-updated', checkForLiveUpdate);
+  window.addEventListener('noori-events-updated', renderEventList);
+
+  /* theme: default to dark, respect system preference, toggle via button */
+  function setTheme(theme){
+    html.setAttribute('data-theme', theme);
+    document.getElementById('themeToggle').setAttribute('aria-pressed', theme === 'light');
+  }
+  const prefersLight = window.matchMedia('(prefers-color-scheme: light)').matches;
+  setTheme(prefersLight ? 'light' : 'dark');
+  document.getElementById('themeToggle').addEventListener('click', ()=>{
+    const current = html.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+    setTheme(current === 'light' ? 'dark' : 'light');
+  });
+
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (reduceMotion || typeof gsap === 'undefined') {
+    document.querySelectorAll('#hd, #todayStrip, #coinBlock, #gbpCard, #ticker, .panel, #siteFooter, #secLabel').forEach(el => { el.style.opacity = 1; });
+  } else {
+    const tl = gsap.timeline({ defaults: { ease: 'power3.out' } });
+    tl.to('#hd', { opacity:1, duration:.5 }, 0)
+      .fromTo('#todayStrip', { opacity:0, y:14 }, { opacity:1, y:0, duration:.6 }, .1)
+      .fromTo('#coinBlock', { opacity:0, scale:.85 }, { opacity:1, scale:1, duration:.7, ease:'back.out(1.3)' }, .2)
+      .fromTo('#gbpCard', { opacity:0, y:14 }, { opacity:1, y:0, duration:.6 }, .3)
+      .fromTo('#ticker', { opacity:0, y:10 }, { opacity:1, y:0, duration:.5 }, .45)
+      .to('#secLabel', { opacity:1, duration:.4 }, .55)
+      .fromTo('#panelTable', { opacity:0, y:16 }, { opacity:1, y:0, duration:.5 }, .6)
+      .fromTo('#panelCal', { opacity:0, y:16 }, { opacity:1, y:0, duration:.5 }, .68)
+      .to('#siteFooter', { opacity:1, duration:.4 }, .9);
+  }
+
+  /* ============================================================
+     COIN — real 3D via WebGL (Three.js).
+     Earlier CSS-only attempts kept collapsing because a CSS "3D" object is still
+     just flat planes: at steep angles they render as zero-thickness slivers.
+     A WebGL cylinder is genuine geometry lit by real lights, so perspective,
+     depth and volume are actual rather than simulated.
+     ============================================================ */
+  (function initCoin3D(){
+    const host  = document.getElementById('coin');
+    const stage = document.getElementById('coinStage');
+    const fallback = document.getElementById('coinFallback');
+    if (!host || !stage) return;
+
+    // Graceful degradation if WebGL or Three.js is unavailable
+    if (typeof THREE === 'undefined') { if (fallback) fallback.style.display = 'flex'; return; }
+
+    let W = host.clientWidth || 320, H = host.clientHeight || 230;
+    let renderer;
+    try {
+      renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+    } catch (e) {
+      if (fallback) fallback.style.display = 'flex';
+      return;
+    }
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    if (THREE.sRGBEncoding !== undefined) renderer.outputEncoding = THREE.sRGBEncoding;
+    renderer.setSize(W, H);
+    host.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(38, W / H, 0.1, 100);
+    camera.position.set(0, 0, 7.2);
+
+    /* --- face textures drawn on canvases --- */
+    function faceTexture(draw){
+      const S = 512;
+      const cv = document.createElement('canvas');
+      cv.width = cv.height = S;
+      const g = cv.getContext('2d');
+
+      // gold disc with a soft highlight
+      const grd = g.createLinearGradient(0, 0, S, S);
+      grd.addColorStop(0,   '#786047');
+      grd.addColorStop(0.22,'#C9AD73');
+      grd.addColorStop(0.42,'#A88B4C');
+      grd.addColorStop(0.6, '#D0B57E');
+      grd.addColorStop(0.8, '#8E7546');
+      grd.addColorStop(1,   '#59492E');
+      g.fillStyle = grd;
+      g.beginPath(); g.arc(S/2, S/2, S/2, 0, Math.PI*2); g.fill();
+
+      // faint grain so the metal doesn't look like a flat gradient
+      g.globalAlpha = 0.05;
+      for (let i = 0; i < 900; i++) {
+        const a = Math.random() * Math.PI * 2, r = Math.random() * (S/2);
+        const x = S/2 + Math.cos(a) * r, y = S/2 + Math.sin(a) * r;
+        g.fillStyle = Math.random() > 0.5 ? '#fff' : '#000';
+        g.fillRect(x, y, 1.4, 1.4);
+      }
+      g.globalAlpha = 1;
+
+      const hi = g.createRadialGradient(S*0.34, S*0.28, 10, S*0.34, S*0.28, S*0.55);
+      hi.addColorStop(0, 'rgba(255,246,214,0.38)');
+      hi.addColorStop(1, 'rgba(255,246,214,0)');
+      g.fillStyle = hi;
+      g.beginPath(); g.arc(S/2, S/2, S/2, 0, Math.PI*2); g.fill();
+
+      // raised border + dashed inner ring
+      g.lineWidth = 26; g.strokeStyle = '#6b4910';
+      g.beginPath(); g.arc(S/2, S/2, S/2 - 14, 0, Math.PI*2); g.stroke();
+      g.lineWidth = 5;  g.strokeStyle = 'rgba(255,240,200,.32)';
+      g.beginPath(); g.arc(S/2, S/2, S/2 - 32, 0, Math.PI*2); g.stroke();
+      g.lineWidth = 4;  g.strokeStyle = 'rgba(90,60,15,.5)';
+      g.setLineDash([12, 10]);
+      g.beginPath(); g.arc(S/2, S/2, S/2 - 60, 0, Math.PI*2); g.stroke();
+      g.setLineDash([]);
+
+      draw(g, S);
+
+      const tex = new THREE.CanvasTexture(cv);
+      tex.anisotropy = 8;
+      if (THREE.sRGBEncoding !== undefined) tex.encoding = THREE.sRGBEncoding;
+      return tex;
+    }
+
+    let frontTex, backTex, material;
+    let coinCurrency = NooriData.getCoinCurrency();
+
+    function coinMeta(code){
+      return NooriData.CURRENCIES.find(x => x.code === code) || NooriData.CURRENCIES[0];
+    }
+    function coinSymbolFor(code){ return coinMeta(code).symbol; }
+    function coinLabelFor(code){
+      const m = coinMeta(code);
+      return (currentLang === 'fa') ? m.nameFa : m.nameEn.toUpperCase();
+    }
+
+    function drawFront(g, S){
+      g.fillStyle = '#3d2a06';
+      g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.font = '700 240px Georgia, serif';
+      g.fillText(coinSymbolFor(coinCurrency), S/2, S/2 - 22);
+      const label = coinLabelFor(coinCurrency);
+      // shrink until it clears the dashed ring — "BRITISH POUND" used to spill past it
+      const maxW = (S - 120) * 0.72;
+      let ls = 34;
+      g.letterSpacing = '4px';
+      g.font = `700 ${ls}px Arial, sans-serif`;
+      while (g.measureText(label).width > maxW && ls > 16) {
+        ls -= 1;
+        g.font = `700 ${ls}px Arial, sans-serif`;
+      }
+      g.fillStyle = '#3a2a10';
+      g.fillText(label, S/2, S/2 + 118);
+      g.letterSpacing = '0px';
+    }
+    function drawBack(g, S){
+      const rates = NooriData.getRatesForDate(NooriData.todayKey());
+      const r = rates && rates[coinCurrency];
+      const rate = r ? Math.round(r.sell).toLocaleString('en-US') : '';
+      g.fillStyle = '#3d2a06';
+      g.textAlign = 'center'; g.textBaseline = 'middle';
+
+      // Auto-fit the rate so it always sits inside the dashed inner ring
+      // (radius S/2 - 60), instead of a fixed size that overflowed on longer numbers.
+      const maxWidth = (S - 120) * 0.78;
+      let fontSize = 92;
+      g.font = `800 ${fontSize}px Arial, sans-serif`;
+      while (g.measureText(rate).width > maxWidth && fontSize > 36) {
+        fontSize -= 2;
+        g.font = `800 ${fontSize}px Arial, sans-serif`;
+      }
+      g.fillText(rate, S/2, S/2 - 8);
+
+      g.font = '700 26px Arial, sans-serif';
+      g.fillStyle = '#3a2a10';
+      const unit = (currentLang === 'fa') ? 'تومان \u00b7 فروش' : 'TOMAN \u00b7 SELL';
+      g.fillText(unit, S/2, S/2 + Math.max(66, fontSize * 0.72));
+    }
+
+    // milled (reeded) edge texture
+    function edgeTexture(){
+      const cv = document.createElement('canvas');
+      cv.width = 1024; cv.height = 64;
+      const g = cv.getContext('2d');
+      const base = g.createLinearGradient(0, 0, 0, 64);
+      base.addColorStop(0,   '#3f2a09');
+      base.addColorStop(0.2, '#8a611f');
+      base.addColorStop(0.45,'#F5E3B0');
+      base.addColorStop(0.7, '#C79A34');
+      base.addColorStop(1,   '#33220a');
+      g.fillStyle = base; g.fillRect(0, 0, 1024, 64);
+      for (let x = 0; x < 1024; x += 8) {
+        g.fillStyle = 'rgba(0,0,0,.28)';  g.fillRect(x, 0, 3, 64);
+        g.fillStyle = 'rgba(255,255,255,.18)'; g.fillRect(x + 4, 0, 2, 64);
+      }
+      const tex = new THREE.CanvasTexture(cv);
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.repeat.x = 6;                 // milling repeats around the rim
+      tex.anisotropy = 8;
+      if (THREE.sRGBEncoding !== undefined) tex.encoding = THREE.sRGBEncoding;
+      return tex;
+    }
+
+    const RADIUS = 2.0, THICK = 0.30;
+
+    /* Faces are separate CircleGeometry discs rather than the cylinder's own caps.
+       Cap UVs are mapped against the cylinder's Y axis, so once the mesh is stood up
+       to face the camera the artwork comes out rotated. A circle in the XY plane
+       already faces +Z with upright UVs, so the text always reads correctly. */
+    const pivot = new THREE.Group();
+
+    // rim only — caps are left open because the discs below cover them
+    const rimGeo = new THREE.CylinderGeometry(RADIUS, RADIUS, THICK, 96, 1, true);
+    const rimMat = new THREE.MeshStandardMaterial({
+      map: edgeTexture(), metalness: 0.5, roughness: 0.4,
+      emissive: 0x140e03, emissiveIntensity: 0.15
+    });
+    const rimMesh = new THREE.Mesh(rimGeo, rimMat);
+    rimMesh.rotation.x = Math.PI / 2;         // stand the tube up to face the camera
+    pivot.add(rimMesh);
+
+    frontTex = faceTexture(drawFront);
+    backTex  = faceTexture(drawBack);
+    /* metalness near 1 with no environment map renders almost black — keeping it
+       low and adding a little emissive is what makes the gold read bright. */
+    const faceMatOpts = { metalness: 0.45, roughness: 0.42,
+                          emissive: 0x1a1204, emissiveIntensity: 0.18 };
+    const frontMat = new THREE.MeshStandardMaterial(Object.assign({ map: frontTex }, faceMatOpts));
+    const backMat  = new THREE.MeshStandardMaterial(Object.assign({ map: backTex  }, faceMatOpts));
+
+    const discGeo = new THREE.CircleGeometry(RADIUS, 96);
+    const frontDisc = new THREE.Mesh(discGeo, frontMat);
+    frontDisc.position.z = THICK / 2;
+    pivot.add(frontDisc);
+
+    const backDisc = new THREE.Mesh(discGeo, backMat);
+    backDisc.position.z = -THICK / 2;
+    backDisc.rotation.y = Math.PI;            // turn it to face away from the camera
+    /* No texture mirroring here: rotating the disc 180° AND viewing it from the
+       other side cancel out, so the artwork already reads correctly. Adding
+       repeat.x = -1 was what made the numbers come out backwards. */
+    pivot.add(backDisc);
+
+    scene.add(pivot);
+
+    /* --- lighting: warm key + cool fill gives gold its sheen --- */
+    scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+    const key = new THREE.DirectionalLight(0xfff2d8, 1.15);
+    key.position.set(3, 4, 7); scene.add(key);
+    const front = new THREE.DirectionalLight(0xffffff, 0.5);
+    front.position.set(0, 0, 9); scene.add(front);
+    const fill = new THREE.DirectionalLight(0xbcd0f0, 0.35);
+    fill.position.set(-5, -2, 4); scene.add(fill);
+    const rimLight = new THREE.PointLight(0xffc861, 0.7, 30);
+    rimLight.position.set(-3.5, 2.5, -3); scene.add(rimLight);
+
+    /* --- interaction --- */
+    let rotY = 0, rotX = 0.22;
+    let velY = 0.006, velX = 0;
+    let dragging = false, lastX = 0, lastY = 0, dragDist = 0, activeId = null;
+    let idleTimer = null, userActive = false;
+
+    function markUserActive(){
+      userActive = true;
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(()=>{ userActive = false; }, 2000);
+    }
+
+    stage.addEventListener('pointerdown', (e)=>{
+      dragging = true; activeId = e.pointerId;
+      lastX = e.clientX; lastY = e.clientY; dragDist = 0;
+      velY = 0; velX = 0; markUserActive();
+      if (stage.setPointerCapture) { try { stage.setPointerCapture(e.pointerId); } catch(err){} }
+      e.preventDefault();
+    });
+    stage.addEventListener('pointermove', (e)=>{
+      if (!dragging || e.pointerId !== activeId) return;
+      const dx = e.clientX - lastX, dy = e.clientY - lastY;
+      dragDist += Math.abs(dx) + Math.abs(dy);
+      rotY += dx * 0.012;
+      rotX += dy * 0.010;
+      rotX = Math.max(-1.1, Math.min(1.1, rotX));
+      velY = dx * 0.012; velX = dy * 0.010;
+      lastX = e.clientX; lastY = e.clientY;
+      markUserActive();
+    });
+    function endDrag(e){
+      if (!dragging) return;
+      if (e && e.pointerId !== undefined && e.pointerId !== activeId) return;
+      dragging = false; activeId = null;
+      if (dragDist < 6) { flipTarget = rotY + Math.PI; }  // a tap flips it
+      markUserActive();
+    }
+    stage.addEventListener('pointerup', endDrag);
+    stage.addEventListener('pointercancel', endDrag);
+
+    // touch fallback for browsers that don't deliver pointer events here
+    stage.addEventListener('touchstart', (e)=>{
+      if (!e.touches || e.touches.length !== 1) return;
+      dragging = true; activeId = 'touch';
+      lastX = e.touches[0].clientX; lastY = e.touches[0].clientY;
+      dragDist = 0; velY = 0; velX = 0; markUserActive();
+      e.preventDefault();
+    }, { passive:false });
+    stage.addEventListener('touchmove', (e)=>{
+      if (!dragging || !e.touches || e.touches.length !== 1) return;
+      const x = e.touches[0].clientX, y = e.touches[0].clientY;
+      const dx = x - lastX, dy = y - lastY;
+      dragDist += Math.abs(dx) + Math.abs(dy);
+      rotY += dx * 0.012;
+      rotX = Math.max(-1.1, Math.min(1.1, rotX + dy * 0.010));
+      velY = dx * 0.012; velX = dy * 0.010;
+      lastX = x; lastY = y; markUserActive();
+      e.preventDefault();
+    }, { passive:false });
+    stage.addEventListener('touchend', ()=>{
+      if (!dragging) return;
+      dragging = false; activeId = null;
+      if (dragDist < 6) flipTarget = rotY + Math.PI;
+      markUserActive();
+    });
+
+    let flipTarget = null;
+
+    function animate(){
+      requestAnimationFrame(animate);
+      if (!dragging) {
+        if (flipTarget !== null) {
+          const diff = flipTarget - rotY;
+          if (Math.abs(diff) < 0.01) { rotY = flipTarget; flipTarget = null; }
+          else rotY += diff * 0.12;
+        } else {
+          // momentum, then a calm idle spin once the user lets go
+          velY *= 0.95; velX *= 0.9;
+          rotY += velY; rotX += velX;
+          rotX += (0.22 - rotX) * 0.03;          // settle back to the resting tilt
+          if (!userActive && Math.abs(velY) < 0.004) rotY += 0.006;
+        }
+      }
+      pivot.rotation.y = rotY;
+      pivot.rotation.x = rotX;
+      renderer.render(scene, camera);
+    }
+    if (!reduceMotion) animate();
+    else renderer.render(scene, camera);
+
+    function resize(){
+      W = host.clientWidth || 320; H = host.clientHeight || 230;
+      camera.aspect = W / H; camera.updateProjectionMatrix();
+      renderer.setSize(W, H);
+    }
+    window.addEventListener('resize', resize);
+    setTimeout(resize, 60);
+
+    /* let the rest of the page refresh the coin's printed rate / language */
+    window.addEventListener('noori-coin-updated', function(){
+      coinCurrency = NooriData.getCoinCurrency();
+      if (window.NooriCoin) window.NooriCoin.refresh();
+    });
+    window.addEventListener('storage', function(e){
+      if (e.key === 'noori_exchange_coin_v1') {
+        coinCurrency = NooriData.getCoinCurrency();
+        if (window.NooriCoin) window.NooriCoin.refresh();
+      }
+    });
+
+    window.NooriCoin = {
+      refresh(){
+        coinCurrency = NooriData.getCoinCurrency();
+        // faces are two separate meshes now, each with a single material
+        const nf = faceTexture(drawFront);
+        const nb = faceTexture(drawBack);
+        if (frontMat.map) frontMat.map.dispose();
+        if (backMat.map)  backMat.map.dispose();
+        frontMat.map = nf; backMat.map = nb;
+        frontTex = nf; backTex = nb;
+        frontMat.needsUpdate = true; backMat.needsUpdate = true;
+      }
+    };
+  })();
+</script>
+</body>
+</html>
